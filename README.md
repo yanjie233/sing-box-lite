@@ -49,7 +49,7 @@ sudo ./install-singbox-lite.sh
 ```sh
 curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
 chmod +x install-singbox-lite.sh
-./install-singbox-lite.sh
+sudo ./install-singbox-lite.sh
 ```
 
 脚本只会询问一次端口：
@@ -188,11 +188,40 @@ tail -n 100 /var/log/sing-box.err
 脚本默认只询问端口；在特殊网络环境下，可以在执行前覆盖自动检测值：
 
 ```sh
-PUBLIC_IP=203.0.113.10 REALITY_SNI=www.microsoft.com sudo -E ./install-singbox-lite.sh 443
+PUBLIC_IP=203.0.113.10 NODE_REGION_CODE=HK NODE_REGION_EMOJI=🇭🇰 sudo -E ./install-singbox-lite.sh 443
 ```
 
 通常不需要设置这些变量。
 
+## 节点链接格式
+
+脚本会将公网 IP 的地区信息用于生成节点名称。默认格式为：
+
+```text
+地区 Emoji-地区缩写-Vless
+地区 Emoji-地区缩写-Hy2
+```
+
+例如香港服务器会生成类似下面的链接：
+
+```text
+vless://UUID@SERVER:443/?...#🇭🇰-HK-Vless
+hysteria2://PASSWORD@SERVER:443/?...#🇭🇰-HK-Hy2
+```
+
+实际完整链接会保存在：
+
+```text
+/etc/sing-box/clients/links.txt
+```
+
+如果地区接口不可用，脚本会使用 `🌐-XX` 作为兜底名称。也可以手动指定地区，避免自动识别：
+
+```sh
+NODE_REGION_CODE=HK NODE_REGION_EMOJI=🇭🇰 sudo -E ./install-singbox-lite.sh 443
+```
+
+其中 `NODE_REGION_CODE` 建议使用两位地区缩写，例如 `HK`、`US`、`JP`、`SG`；`NODE_REGION_EMOJI` 使用对应的国旗或地区 Emoji。
 ## 免责声明
 
 请只在你拥有或获授权管理的服务器上使用。使用前请确认所在地法律、云服务商条款和网络运营商政策。

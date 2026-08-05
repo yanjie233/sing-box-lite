@@ -12,6 +12,8 @@ CERT_FILE="$CONFIG_DIR/server.crt"
 KEY_FILE="$CONFIG_DIR/server.key"
 REALITY_SNI="${REALITY_SNI:-www.microsoft.com}"
 HY2_SNI="${HY2_SNI:-www.example.com}"
+NODE_REGION_CODE="${NODE_REGION_CODE:-}"
+NODE_REGION_EMOJI="${NODE_REGION_EMOJI:-}"
 PORT="${1:-}"
 
 log() { printf '[sing-box-lite] %s\n' "$*"; }
@@ -116,6 +118,22 @@ get_public_ip() {
     printf '%s' "$ip"
 }
 
+get_node_region() {
+    geo=""
+    if have curl && { [ -z "$NODE_REGION_CODE" ] || [ -z "$NODE_REGION_EMOJI" ]; }; then
+        # ipwho.is returns both ISO country code and flag emoji. If unavailable,
+        # use ipapi.co for the code and fall back to a globe emoji.
+        geo="$(curl -4fsS --max-time 5 "https://ipwho.is/${PUBLIC_IP}?fields=country_code,flag" 2>/dev/null || true)"
+        [ -n "$NODE_REGION_CODE" ] || NODE_REGION_CODE="$(printf '%s' "$geo" | sed -n 's/.*"country_code"[[:space:]]*:[[:space:]]*"\([A-Za-z][A-Za-z]\)".*/\1/p' | head -n 1 | tr '[:lower:]' '[:upper:]')"
+        [ -n "$NODE_REGION_EMOJI" ] || NODE_REGION_EMOJI="$(printf '%s' "$geo" | sed -n 's/.*"emoji"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+    fi
+    if [ -z "$NODE_REGION_CODE" ] && have curl; then
+        NODE_REGION_CODE="$(curl -4fsS --max-time 5 "https://ipapi.co/${PUBLIC_IP}/country/" 2>/dev/null | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]' || true)"
+    fi
+    [ -n "$NODE_REGION_CODE" ] || NODE_REGION_CODE="XX"
+    [ -n "$NODE_REGION_EMOJI" ] || NODE_REGION_EMOJI="🌐"
+}
+
 make_uuid() {
     if [ -r /proc/sys/kernel/random/uuid ]; then
         cat /proc/sys/kernel/random/uuid
@@ -145,6 +163,8 @@ SING_BOX="$(command -v sing-box)"
 
 PUBLIC_IP="${PUBLIC_IP:-$(get_public_ip)}"
 [ -n "$PUBLIC_IP" ] || die "无法自动获取公网 IPv4，请检查网络后重试。"
+get_node_region
+NODE_NAME_BASE="${NODE_REGION_EMOJI}-${NODE_REGION_CODE}"
 
 mkdir -p "$CONFIG_DIR" "$CLIENT_DIR" /var/lib/sing-box
 chmod 700 "$CONFIG_DIR" "$CLIENT_DIR"
@@ -283,14 +303,14 @@ cat > "$CLIENT_DIR/hysteria2.json" <<EOF
 }
 EOF
 
-REALITY_LINK="vless://${UUID}@${URL_HOST}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SNI}&pbk=${REALITY_PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#sing-box-Reality"
-HY2_LINK="hysteria2://${HY2_PASSWORD}@${URL_HOST}:${PORT}/?insecure=1&sni=${HY2_SNI}#sing-box-Hysteria2"
+REALITY_LINK="vless://${UUID}@${URL_HOST}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SNI}&pbk=${REALITY_PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME_BASE}-Vless"
+HY2_LINK="hysteria2://${HY2_PASSWORD}@${URL_HOST}:${PORT}/?insecure=1&sni=${HY2_SNI}#${NODE_NAME_BASE}-Hy2"
 
 cat > "$CLIENT_DIR/links.txt" <<EOF
-# VLESS Reality
+# ${NODE_NAME_BASE}-Vless
 $REALITY_LINK
 
-# Hysteria2（自签名证书，客户端必须允许 insecure）
+# ${NODE_NAME_BASE}-Hy2（自签名证书，客户端必须允许 insecure）
 $HY2_LINK
 EOF
 chmod 600 "$CLIENT_DIR"/*.json "$CLIENT_DIR/links.txt"
@@ -355,6 +375,7 @@ cat > "$CONFIG_DIR/install-info.txt" <<EOF
 sing-box-lite 安装完成
 
 服务器 IPv4: $PUBLIC_IP
+节点名称前缀: $NODE_NAME_BASE
 监听端口: $PORT/TCP + $PORT/UDP
 Reality SNI/握手站点: $REALITY_SNI
 Hysteria2 SNI: $HY2_SNI（自签名证书）
@@ -373,6 +394,7 @@ Hysteria2 SNI: $HY2_SNI（自签名证书）
 - 本脚本不申请域名、不申请 ACME 证书；Hysteria2 使用自签名证书并要求客户端 insecure=1。
 - 重跑脚本会备份旧配置并生成新凭据，旧客户端将失效。
 - 如服务器位于 NAT 后，客户端地址不能使用脚本检测到的内网地址，需改为公网映射地址。
+- 节点名称格式：地区 Emoji-地区缩写-Vless 或 地区 Emoji-地区缩写-Hy2。
 EOF
 chmod 600 "$CONFIG_DIR/install-info.txt"
 
