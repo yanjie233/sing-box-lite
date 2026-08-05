@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: one-port installer for VLESS-Reality + Hysteria2
-SCRIPT_VERSION="1.5.0"
+SCRIPT_VERSION="1.6.0"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 # Supports Debian/Ubuntu, Alpine, and Alibaba Linux/RHEL-like systems.
 # It only prompts for the port; all credentials and the server IP are generated/detected automatically.
@@ -491,10 +491,6 @@ cat > "$CONFIG_FILE" <<EOF
       "tls": {
         "enabled": true,
         "server_name": "$REALITY_SNI",
-        "utls": {
-          "enabled": true,
-          "fingerprint": "chrome"
-        },
         "reality": {
           "enabled": true,
           "handshake": {
@@ -559,6 +555,10 @@ cat > "$CLIENT_DIR/reality.json" <<EOF
       "tls": {
         "enabled": true,
         "server_name": "$REALITY_SNI",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
         "reality": {
           "enabled": true,
           "public_key": "$REALITY_PUBLIC_KEY",
