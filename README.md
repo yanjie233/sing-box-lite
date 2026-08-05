@@ -1,4 +1,4 @@
-# sing-box-lite（测试中）
+# sing-box-lite
 
 一个面向 **64MB / 128MB 小内存 VPS** 的极简 sing-box 安装脚本，自动配置：
 
@@ -22,6 +22,8 @@
 - 自动创建 systemd 或 OpenRC 服务
 - 生成 sing-box 客户端出站模板和 VLESS / Hysteria2 导入链接
 - 重复执行时自动备份旧配置
+- 每次运行自动检查 GitHub 最新脚本版本，发现新版本后自动覆盖并重新执行
+- 自动更新前会备份旧脚本
 
 ## 支持环境
 
@@ -63,6 +65,37 @@ sudo ./install-singbox-lite.sh
 ```sh
 sudo ./install-singbox-lite.sh 443
 ```
+
+## 版本与自动更新
+
+当前脚本版本：`1.1.0`
+
+查看版本：
+
+```sh
+./install-singbox-lite.sh --version
+```
+
+脚本在安装开始前会检查 GitHub 上的最新 `install-singbox-lite.sh`。如果远程版本号高于本地版本号，脚本会：
+
+1. 备份当前脚本，例如 `install-singbox-lite.sh.bak.1.0.0`
+2. 下载并覆盖当前脚本
+3. 使用原有参数重新执行安装流程
+
+如果脚本是通过管道执行，或当前文件不可写，则会跳过自动更新。也可以手动关闭更新：
+
+```sh
+SINGBOX_LITE_SKIP_UPDATE=1 sudo -E ./install-singbox-lite.sh 443
+```
+
+如果你把脚本复制到了自己的仓库，可以覆盖更新地址：
+
+```sh
+REMOTE_SCRIPT_URL=https://raw.githubusercontent.com/你的用户名/你的仓库/main/install-singbox-lite.sh \
+  sudo -E ./install-singbox-lite.sh 443
+```
+
+更新失败不会中断安装，脚本会继续使用当前版本。
 
 ## 安全组和防火墙
 

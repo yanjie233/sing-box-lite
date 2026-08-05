@@ -1,5 +1,7 @@
 #!/bin/sh
 # sing-box-lite: one-port installer for VLESS-Reality + Hysteria2
+SCRIPT_VERSION="1.1.0"
+REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 # Supports Debian/Ubuntu, Alpine, and Alibaba Linux/RHEL-like systems.
 # It only prompts for the port; all credentials and the server IP are generated/detected automatically.
 
@@ -19,6 +21,11 @@ PORT="${1:-}"
 log() { printf '[sing-box-lite] %s\n' "$*"; }
 warn() { printf '[sing-box-lite][WARN] %s\n' "$*" >&2; }
 die() { printf '[sing-box-lite][ERROR] %s\n' "$*" >&2; exit 1; }
+
+if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-v" ]; then
+    printf 'sing-box-lite %s\n' "$SCRIPT_VERSION"
+    exit 0
+fi
 
 [ "$(id -u)" -eq 0 ] || die "请使用 root 运行。"
 
@@ -118,6 +125,68 @@ get_public_ip() {
     printf '%s' "$ip"
 }
 
+
+version_gt() {
+    awk -v a="$1" -v b="$2" '
+        function part(v, n, x) { split(v, x, "."); return x[n] + 0 }
+        BEGIN {
+            for (i = 1; i <= 3; i++) {
+                ai = part(a, i)
+                bi = part(b, i)
+                if (ai > bi) exit 0
+                if (ai < bi) exit 1
+            }
+            exit 1
+        }
+    '
+}
+
+self_update() {
+    [ "${SINGBOX_LITE_SKIP_UPDATE:-0}" = "1" ] && return 0
+    [ "${SINGBOX_LITE_UPDATE_DONE:-0}" = "1" ] && return 0
+    have curl || return 0
+
+    self_path="$0"
+    case "$self_path" in
+        /dev/*|/proc/*|/sys/*)
+            warn "当前脚本来自管道或临时文件，跳过自动更新。"
+            return 0
+            ;;
+    esac
+    [ -f "$self_path" ] || return 0
+    [ -w "$self_path" ] || {
+        warn "当前脚本不可写，跳过自动更新：$self_path"
+        return 0
+    }
+
+    tmp_update="$(mktemp)"
+    if ! curl -4fsSL --max-time 10 "$REMOTE_SCRIPT_URL" -o "$tmp_update"; then
+        rm -f "$tmp_update"
+        warn "无法检查最新版本，继续使用当前版本 $SCRIPT_VERSION。"
+        return 0
+    fi
+
+    remote_version="$(sed -n 's/^SCRIPT_VERSION="\([0-9][0-9.]*\)".*/\1/p' "$tmp_update" | head -n 1)"
+    if [ -z "$remote_version" ] || ! printf '%s' "$remote_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        rm -f "$tmp_update"
+        warn "远程脚本版本信息无效，继续使用当前版本 $SCRIPT_VERSION。"
+        return 0
+    fi
+
+    if version_gt "$remote_version" "$SCRIPT_VERSION"; then
+        update_backup="$self_path.bak.$SCRIPT_VERSION"
+        cp -p "$self_path" "$update_backup"
+        cp "$tmp_update" "$self_path"
+        chmod +x "$self_path"
+        rm -f "$tmp_update"
+        log "发现新版本：$SCRIPT_VERSION -> $remote_version，已覆盖当前脚本并重新执行。"
+        export SINGBOX_LITE_UPDATE_DONE=1
+        exec sh "$self_path" "$@"
+    fi
+
+    rm -f "$tmp_update"
+}
+
 get_node_region() {
     geo=""
     if have curl && { [ -z "$NODE_REGION_CODE" ] || [ -z "$NODE_REGION_EMOJI" ]; }; then
@@ -158,6 +227,7 @@ make_cert() {
 }
 
 install_base_packages
+self_update "$@"
 install_sing_box
 SING_BOX="$(command -v sing-box)"
 
@@ -373,6 +443,7 @@ fi
 
 cat > "$CONFIG_DIR/install-info.txt" <<EOF
 sing-box-lite 安装完成
+脚本版本: $SCRIPT_VERSION
 
 服务器 IPv4: $PUBLIC_IP
 节点名称前缀: $NODE_NAME_BASE
