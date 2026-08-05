@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: one-port installer for VLESS-Reality + Hysteria2
-SCRIPT_VERSION="1.9.0"
+SCRIPT_VERSION="2.0.1"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 # Supports Debian/Ubuntu, Alpine, and Alibaba Linux/RHEL-like systems.
 # It only prompts for the port; all credentials and the server IP are generated/detected automatically.
@@ -19,6 +19,8 @@ NODE_REGION_CODE="${NODE_REGION_CODE:-}"
 NODE_REGION_EMOJI="${NODE_REGION_EMOJI:-}"
 REALITY_PORT=""
 HY2_PORT=""
+DEFAULT_REALITY_PORT="55667"
+DEFAULT_HY2_PORT="55668"
 ACTION=""
 
 log() { printf '[sing-box-lite] %s\n' "$*"; }
@@ -39,21 +41,83 @@ download_file() {
 }
 
 show_menu() {
-    printf '\n==== sing-box-lite %s ====\n' "$SCRIPT_VERSION"
-    printf '1) 安装 / 更新（分别询问 TCP 和 UDP 端口）\n'
-    printf '2) 卸载\n'
-    printf '3) 查看节点\n'
-    printf '0) 退出\n'
+    printf '\n\033[1;36m╔══════════════════════════════════════════════╗\033[0m\n'
+    printf '\033[1;36m║\033[0m       \033[1;32msing-box-lite\033[0m  \033[1;33mv%s\033[0m              \033[1;36m║\033[0m\n' "$SCRIPT_VERSION"
+    printf '\033[1;36m╠══════════════════════════════════════════════╣\033[0m\n'
+    printf '\033[1;36m║\033[0m  1) 安装 / 更新                         \033[1;36m║\033[0m\n'
+    printf '\033[1;36m║\033[0m  2) 卸载                                 \033[1;36m║\033[0m\n'
+    printf '\033[1;36m║\033[0m  3) 查看节点                             \033[1;36m║\033[0m\n'
+    printf '\033[1;36m║\033[0m  4) 运行状态查询                         \033[1;36m║\033[0m\n'
+    printf '\033[1;36m║\033[0m  5) 状态管理（关闭 / 重启 / 开启）       \033[1;36m║\033[0m\n'
+    printf '\033[1;36m║\033[0m  0) 退出                                 \033[1;36m║\033[0m\n'
+    printf '\033[1;36m╚══════════════════════════════════════════════╝\033[0m\n'
     printf '请选择操作：'
     read -r menu_choice
     case "$menu_choice" in
         1) ACTION="install" ;;
         2) ACTION="uninstall" ;;
         3) ACTION="nodes" ;;
+        4) ACTION="status" ;;
+        5) ACTION="manage" ;;
         0) exit 0 ;;
         *) die "无效选项。" ;;
     esac
 }
+
+service_status() {
+    if have systemctl; then
+        systemctl is-active sing-box 2>/dev/null || true
+    elif have rc-service; then
+        rc-service sing-box status >/dev/null 2>&1 && printf 'started' || printf 'stopped'
+    else
+        printf 'unknown'
+    fi
+}
+
+show_status() {
+    [ "$(id -u)" -eq 0 ] || die "查询状态请使用 root 运行。"
+    printf '\n\033[1;36m==== sing-box-lite 运行状态 ====\033[0m\n'
+    if have systemctl; then
+        systemctl status sing-box --no-pager -l || true
+    elif have rc-service; then
+        rc-service sing-box status || true
+    else
+        warn "未检测到 systemd 或 OpenRC。"
+    fi
+    if have ss; then
+        printf '\n监听端口：\n'
+        ss -lntup 2>/dev/null | grep -E 'sing-box|LISTEN' || true
+    fi
+    [ -f "$CONFIG_DIR/install-info.txt" ] && {
+        printf '\n安装信息：\n'
+        sed -n '1,18p' "$CONFIG_DIR/install-info.txt"
+    }
+}
+
+manage_service() {
+    [ "$(id -u)" -eq 0 ] || die "管理服务请使用 root 运行。"
+    printf '\n\033[1;36m==== 状态管理 ====\033[0m\n'
+    printf '1) 关闭服务\n2) 重启服务\n3) 开启服务\n0) 返回\n请选择操作：'
+    read -r service_choice
+    case "$service_choice" in
+        0) return 0 ;;
+        1) service_action="stop" ;;
+        2) service_action="restart" ;;
+        3) service_action="start" ;;
+        *) die "无效选项。" ;;
+    esac
+    if have systemctl; then
+        systemctl "$service_action" sing-box
+        [ "$service_action" = "start" ] && systemctl enable sing-box >/dev/null 2>&1 || true
+    elif have rc-service; then
+        rc-service sing-box "$service_action"
+        [ "$service_action" = "start" ] && rc-update add sing-box default >/dev/null 2>&1 || true
+    else
+        die "未检测到 systemd 或 OpenRC。"
+    fi
+    printf '\n当前状态：%s\n' "$(service_status)"
+}
+
 
 view_nodes() {
     [ "$(id -u)" -eq 0 ] || die "查看节点请使用 root 运行。"
@@ -130,6 +194,12 @@ case "${1:-}" in
     nodes|node|view|show)
         ACTION="nodes"
         ;;
+    status|state|check)
+        ACTION="status"
+        ;;
+    manage|service)
+        ACTION="manage"
+        ;;
     '')
         show_menu
         ;;
@@ -152,16 +222,26 @@ if [ "$ACTION" = "nodes" ]; then
     view_nodes
     exit 0
 fi
+if [ "$ACTION" = "status" ]; then
+    show_status
+    exit 0
+fi
+if [ "$ACTION" = "manage" ]; then
+    manage_service
+    exit 0
+fi
 
 [ "$(id -u)" -eq 0 ] || die "安装请使用 root 运行。"
 
 if [ -z "$REALITY_PORT" ]; then
-    printf '请输入 Reality TCP 监听端口（例如 443）：'
+    printf '请输入 Reality TCP 监听端口（默认 %s，直接回车使用默认）：' "$DEFAULT_REALITY_PORT"
     read -r REALITY_PORT
+    [ -n "$REALITY_PORT" ] || REALITY_PORT="$DEFAULT_REALITY_PORT"
 fi
 if [ -z "$HY2_PORT" ]; then
-    printf '请输入 Hysteria2 UDP 监听端口（例如 8443）：'
+    printf '请输入 Hysteria2 UDP 监听端口（默认 %s，直接回车使用默认）：' "$DEFAULT_HY2_PORT"
     read -r HY2_PORT
+    [ -n "$HY2_PORT" ] || HY2_PORT="$DEFAULT_HY2_PORT"
 fi
 if [ -z "${REALITY_SNI_INPUT:-}" ]; then
     printf '请输入 Reality 自定义域名（直接回车使用默认 www.cloudflare.com）：'
@@ -190,6 +270,7 @@ validate_port() {
 }
 validate_port "$REALITY_PORT" "Reality TCP 端口"
 validate_port "$HY2_PORT" "Hysteria2 UDP 端口"
+[ "$REALITY_PORT" != "$HY2_PORT" ] || die "Reality TCP 和 Hysteria2 UDP 不能使用同一个端口，请重新输入。"
 
 # Read distro information without requiring lsb_release.
 OS_ID=""
@@ -681,6 +762,7 @@ sing-box-lite 安装完成
 节点名称前缀: $NODE_NAME_BASE
 Reality TCP 端口: $REALITY_PORT
 Hysteria2 UDP 端口: $HY2_PORT
+默认端口: Reality $DEFAULT_REALITY_PORT / Hy2 $DEFAULT_HY2_PORT
 Reality SNI/握手站点: $REALITY_SNI
 Reality TLS 指纹: $REALITY_FINGERPRINT
 Reality Short ID: 空（兼容更多客户端）
@@ -708,6 +790,9 @@ chmod 600 "$CONFIG_DIR/install-info.txt"
 
 view_nodes
 
-log "安装完成。"
-log "客户端链接和 JSON：$CLIENT_DIR"
-log "请确认云安全组放行 TCP $REALITY_PORT 和 UDP $HY2_PORT。"
+printf '
+\033[1;32m╔══════════════════════════════════════════════╗\033[0m\n'
+printf '\033[1;32m║              安装完成 / 节点已生成           ║\033[0m\n'
+printf '\033[1;32m╚══════════════════════════════════════════════╝\033[0m\n'
+log "客户端文件目录：$CLIENT_DIR"
+log "请放行 TCP $REALITY_PORT 和 UDP $HY2_PORT。"

@@ -1,14 +1,5 @@
 # sing-box-lite
 
-### 不多废话，直接开始！
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
-chmod +x install-singbox-lite.sh
-./install-singbox-lite.sh
-```
-
-
 一个面向 **64MB / 128MB 小内存 VPS** 的极简 sing-box 安装脚本，自动配置：
 
 - **VLESS + Reality**：TCP
@@ -47,15 +38,7 @@ chmod +x install-singbox-lite.sh
 
 ## 快速开始
 
-### 方式一：下载脚本
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
-chmod +x install-singbox-lite.sh
-sudo ./install-singbox-lite.sh
-```
-
-### 方式二：克隆仓库
+### 方式一：克隆仓库
 
 ```sh
 git clone https://github.com/yanjie233/sing-box-lite.git
@@ -64,13 +47,19 @@ chmod +x install-singbox-lite.sh
 sudo ./install-singbox-lite.sh
 ```
 
+### 方式二：下载脚本
 
+```sh
+curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
+chmod +x install-singbox-lite.sh
+sudo ./install-singbox-lite.sh
+```
 
-脚本会分别询问两个端口，然后询问 Reality 握手域名：
+脚本会分别询问两个端口（默认 Reality TCP `55667`、Hysteria2 UDP `55668`），然后询问 Reality 握手域名：
 
 ```text
-请输入 Reality TCP 监听端口（例如 443）：
-请输入 Hysteria2 UDP 监听端口（例如 8443）：
+请输入 Reality TCP 监听端口（默认 55667，直接回车使用默认）：
+请输入 Hysteria2 UDP 监听端口（默认 55668，直接回车使用默认）：
 请输入 Reality 自定义域名（直接回车使用默认 www.cloudflare.com）：
 ```
 
@@ -110,6 +99,8 @@ REALITY_SNI=www.microsoft.com \
 1) 安装 / 更新
 2) 卸载
 3) 查看节点
+4) 运行状态查询
+5) 状态管理（关闭 / 重启 / 开启）
 0) 退出
 ```
 
@@ -124,13 +115,33 @@ sudo ./install-singbox-lite.sh uninstall
 
 # 查看已生成的 VLESS / Hysteria2 节点链接
 sudo ./install-singbox-lite.sh nodes
+
+# 查询运行状态
+sudo ./install-singbox-lite.sh status
+
+# 进入关闭 / 重启 / 开启菜单
+sudo ./install-singbox-lite.sh manage
 ```
 
 卸载操作需要输入 `yes` 确认，并且不会删除 `curl`、`wget`、`openssl`、`tar` 等系统依赖。
 
+## 运行状态与状态管理
+
+菜单中提供：
+
+- **运行状态查询**：查看 systemd / OpenRC 状态、进程、监听端口和安装信息
+- **状态管理**：关闭、重启或开启 sing-box 服务
+
+也可以直接执行：
+
+```sh
+sudo ./install-singbox-lite.sh status
+sudo ./install-singbox-lite.sh manage
+```
+
 ## 版本与自动更新
 
-当前脚本版本：`1.9.0`
+当前脚本版本：`2.0.1`
 
 查看版本：
 
