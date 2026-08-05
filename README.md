@@ -97,7 +97,7 @@ sudo ./install-singbox-lite.sh nodes
 
 ## 版本与自动更新
 
-当前脚本版本：`1.4.0`
+当前脚本版本：`1.5.0`
 
 查看版本：
 
@@ -176,6 +176,7 @@ UDP 8443
 脚本生成的链接包含：
 
 - 服务器地址和端口
+- Chrome 浏览器 TLS 指纹（`fp=chrome`）
 - UUID
 - Reality 公钥
 - Short ID

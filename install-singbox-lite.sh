@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: one-port installer for VLESS-Reality + Hysteria2
-SCRIPT_VERSION="1.4.0"
+SCRIPT_VERSION="1.5.0"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 # Supports Debian/Ubuntu, Alpine, and Alibaba Linux/RHEL-like systems.
 # It only prompts for the port; all credentials and the server IP are generated/detected automatically.
@@ -491,6 +491,10 @@ cat > "$CONFIG_FILE" <<EOF
       "tls": {
         "enabled": true,
         "server_name": "$REALITY_SNI",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
         "reality": {
           "enabled": true,
           "handshake": {
@@ -586,7 +590,7 @@ cat > "$CLIENT_DIR/hysteria2.json" <<EOF
 }
 EOF
 
-REALITY_LINK="vless://${UUID}@${URL_HOST}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SNI}&pbk=${REALITY_PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME_BASE}-Vless"
+REALITY_LINK="vless://${UUID}@${URL_HOST}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SNI}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME_BASE}-Vless"
 HY2_LINK="hysteria2://${HY2_PASSWORD}@${URL_HOST}:${HY2_PORT}/?insecure=1&sni=${HY2_SNI}#${NODE_NAME_BASE}-Hy2"
 
 cat > "$CLIENT_DIR/links.txt" <<EOF
