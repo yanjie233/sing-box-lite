@@ -1,6 +1,8 @@
 # sing-box-lite
 
-### Debian等
+## 快速开始
+
+### Debian/Ubuntu
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
@@ -12,7 +14,7 @@ sudo ./install-singbox-lite.sh
 apk update && apk add --no-cache curl wget openssl tar
 curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
 chmod +x install-singbox-lite.sh
-sudo ./install-singbox-lite.sh
+./install-singbox-lite.sh
 ```
 
 ---
@@ -51,25 +53,6 @@ sudo ./install-singbox-lite.sh
 - Alibaba Cloud Linux
 
 建议 64MB 机器关闭不必要的 Web 面板、Docker、监控和日志服务，并预留少量磁盘交换空间。
-
-## 快速开始
-
-### 方式一：下载脚本
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
-chmod +x install-singbox-lite.sh
-sudo ./install-singbox-lite.sh
-```
-
-### 方式二：克隆仓库
-
-```sh
-git clone https://github.com/yanjie233/sing-box-lite.git
-cd sing-box-lite
-chmod +x install-singbox-lite.sh
-sudo ./install-singbox-lite.sh
-```
 
 脚本会分别询问两个端口（默认 Reality TCP `55667`、Hysteria2 UDP `55668`），然后询问 Reality 握手域名：
 
