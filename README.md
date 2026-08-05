@@ -43,15 +43,15 @@
 git clone https://github.com/yanjie233/sing-box-lite.git
 cd sing-box-lite
 chmod +x install-singbox-lite.sh
-sudo ./install-singbox-lite.sh
+./install-singbox-lite.sh
 ```
 
-### 方式二：下载脚本
+### （推荐）方式二：下载脚本
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
 chmod +x install-singbox-lite.sh
-sudo ./install-singbox-lite.sh
+./install-singbox-lite.sh
 ```
 
 脚本只会询问一次端口：
