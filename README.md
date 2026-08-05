@@ -5,7 +5,7 @@
 ```sh
 curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
 chmod +x install-singbox-lite.sh
-sudo ./install-singbox-lite.sh
+./install-singbox-lite.sh
 ```
 
 一个面向 **64MB / 128MB 小内存 VPS** 的极简 sing-box 安装脚本，自动配置：
