@@ -18,6 +18,9 @@ chmod +x install-singbox-lite.sh
 ```
 
 ---
+
+## Codex的废话
+
 一个面向 **64MB / 128MB 小内存 VPS** 的极简 sing-box 安装脚本，自动配置：
 
 - **VLESS + Reality**：TCP
