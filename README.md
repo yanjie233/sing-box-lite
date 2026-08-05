@@ -7,6 +7,10 @@ curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/instal
 chmod +x install-singbox-lite.sh
 ./install-singbox-lite.sh
 ```
+Alipen推荐先运行以下内容补全基础工具
+```sh
+apk update && apk add --no-cache curl wget openssl tar
+```
 
 一个面向 **64MB / 128MB 小内存 VPS** 的极简 sing-box 安装脚本，自动配置：
 
