@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: one-port installer for VLESS-Reality + Hysteria2
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.3.0"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 # Supports Debian/Ubuntu, Alpine, and Alibaba Linux/RHEL-like systems.
 # It only prompts for the port; all credentials and the server IP are generated/detected automatically.
@@ -16,28 +16,163 @@ REALITY_SNI="${REALITY_SNI:-www.microsoft.com}"
 HY2_SNI="${HY2_SNI:-www.example.com}"
 NODE_REGION_CODE="${NODE_REGION_CODE:-}"
 NODE_REGION_EMOJI="${NODE_REGION_EMOJI:-}"
-PORT="${1:-}"
+REALITY_PORT=""
+HY2_PORT=""
+ACTION=""
 
 log() { printf '[sing-box-lite] %s\n' "$*"; }
 warn() { printf '[sing-box-lite][WARN] %s\n' "$*" >&2; }
 die() { printf '[sing-box-lite][ERROR] %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+download_file() {
+    url="$1"
+    destination="$2"
+    if have curl; then
+        curl -4fsSL --max-time 30 "$url" -o "$destination"
+    elif have wget; then
+        wget -q --timeout=30 -O "$destination" "$url"
+    else
+        return 1
+    fi
+}
+
+show_menu() {
+    printf '\n==== sing-box-lite %s ====\n' "$SCRIPT_VERSION"
+    printf '1) 安装 / 更新（分别询问 TCP 和 UDP 端口）\n'
+    printf '2) 卸载\n'
+    printf '3) 查看节点\n'
+    printf '0) 退出\n'
+    printf '请选择操作：'
+    read -r menu_choice
+    case "$menu_choice" in
+        1) ACTION="install" ;;
+        2) ACTION="uninstall" ;;
+        3) ACTION="nodes" ;;
+        0) exit 0 ;;
+        *) die "无效选项。" ;;
+    esac
+}
+
+view_nodes() {
+    [ "$(id -u)" -eq 0 ] || die "查看节点请使用 root 运行。"
+    if [ -f "$CLIENT_DIR/links.txt" ]; then
+        printf '\n==== 节点链接 ====\n'
+        cat "$CLIENT_DIR/links.txt"
+        printf '\n节点文件目录：%s\n' "$CLIENT_DIR"
+    else
+        die "未找到节点文件：$CLIENT_DIR/links.txt。请先安装。"
+    fi
+}
+
+uninstall_singbox() {
+    [ "$(id -u)" -eq 0 ] || die "卸载请使用 root 运行。"
+    printf '此操作将停止服务并删除 sing-box 配置、证书、节点链接和本地二进制。输入 yes 确认：'
+    read -r confirm
+    [ "$confirm" = "yes" ] || { log "已取消卸载。"; return 0; }
+
+    if have systemctl; then
+        systemctl disable --now sing-box >/dev/null 2>&1 || true
+        rm -f /etc/systemd/system/sing-box.service
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    if have rc-service; then
+        rc-service sing-box stop >/dev/null 2>&1 || true
+        rc-update del sing-box default >/dev/null 2>&1 || true
+        rm -f /etc/init.d/sing-box
+    fi
+
+    if [ -x /usr/local/bin/sing-box ]; then
+        rm -f /usr/local/bin/sing-box
+    elif [ -x /usr/bin/sing-box ] && [ -r /etc/os-release ]; then
+        # Remove a package-managed binary through its package manager instead of
+        # deleting the file directly and leaving a broken package database.
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        case "${ID:-}" in
+            alpine)
+                apk del sing-box >/dev/null 2>&1 || warn "未能通过 apk 删除 sing-box，请手动执行：apk del sing-box"
+                ;;
+            debian|ubuntu|linuxmint|raspbian)
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get remove -y -qq sing-box >/dev/null 2>&1 || warn "未能通过 apt 删除 sing-box，请手动执行：apt-get remove sing-box"
+                ;;
+            alinux|alibabacloudlinux|centos|rhel|rocky|almalinux|fedora)
+                if have dnf; then
+                    dnf remove -y sing-box >/dev/null 2>&1 || warn "未能通过 dnf 删除 sing-box。"
+                elif have yum; then
+                    yum remove -y sing-box >/dev/null 2>&1 || warn "未能通过 yum 删除 sing-box。"
+                fi
+                ;;
+            *) warn "检测到 /usr/bin/sing-box，但无法判断包管理器；请手动卸载该二进制。" ;;
+        esac
+    fi
+    rm -rf "$CONFIG_DIR" /var/lib/sing-box
+    log "卸载完成。未删除 curl、wget、openssl、tar 等系统依赖。"
+}
 
 if [ "${1:-}" = "--version" ] || [ "${1:-}" = "-v" ]; then
     printf 'sing-box-lite %s\n' "$SCRIPT_VERSION"
     exit 0
 fi
 
-[ "$(id -u)" -eq 0 ] || die "请使用 root 运行。"
+case "${1:-}" in
+    install)
+        ACTION="install"
+        shift
+        REALITY_PORT="${1:-}"
+        HY2_PORT="${2:-}"
+        ;;
+    uninstall|remove)
+        ACTION="uninstall"
+        ;;
+    nodes|node|view|show)
+        ACTION="nodes"
+        ;;
+    '')
+        show_menu
+        ;;
+    *[!0-9]*)
+        die "用法：$0 [install [Reality端口] [Hy2端口] | uninstall | nodes | --version]"
+        ;;
+    *)
+        # Backward compatibility: ./install-singbox-lite.sh 443
+        ACTION="install"
+        REALITY_PORT="$1"
+        HY2_PORT="${2:-}"
+        ;;
+esac
 
-if [ -z "$PORT" ]; then
-    printf '请输入监听端口（TCP+UDP，例如 443）：'
-    read -r PORT
+if [ "$ACTION" = "uninstall" ]; then
+    uninstall_singbox
+    exit 0
+fi
+if [ "$ACTION" = "nodes" ]; then
+    view_nodes
+    exit 0
 fi
 
-case "$PORT" in
-    ''|*[!0-9]*) die "端口必须是 1-65535 的数字。" ;;
-esac
-[ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die "端口必须是 1-65535。"
+[ "$(id -u)" -eq 0 ] || die "安装请使用 root 运行。"
+
+if [ -z "$REALITY_PORT" ]; then
+    printf '请输入 Reality TCP 监听端口（例如 443）：'
+    read -r REALITY_PORT
+fi
+if [ -z "$HY2_PORT" ]; then
+    printf '请输入 Hysteria2 UDP 监听端口（例如 8443）：'
+    read -r HY2_PORT
+fi
+
+validate_port() {
+    port="$1"
+    label="$2"
+    case "$port" in
+        ''|*[!0-9]*) die "$label 必须是 1-65535 的数字。" ;;
+    esac
+    [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "$label 必须是 1-65535。"
+}
+validate_port "$REALITY_PORT" "Reality TCP 端口"
+validate_port "$HY2_PORT" "Hysteria2 UDP 端口"
 
 # Read distro information without requiring lsb_release.
 OS_ID=""
@@ -49,32 +184,99 @@ if [ -r /etc/os-release ]; then
     OS_LIKE="${ID_LIKE:-}"
 fi
 
-have() { command -v "$1" >/dev/null 2>&1; }
-
 install_base_packages() {
     case "$OS_ID" in
         alpine)
-            have apk || die "未找到 apk。"
-            apk add --no-cache ca-certificates curl openssl >/dev/null
+            have apk || warn "未找到 apk，将尝试从 GitHub 下载 sing-box。"
+            if have apk && ! apk add --no-cache ca-certificates curl openssl tar >/dev/null; then
+                warn "Alpine 软件源请求或安装依赖失败，将尝试从 GitHub 下载 sing-box。"
+            fi
             update-ca-certificates >/dev/null 2>&1 || true
             ;;
         debian|ubuntu|linuxmint|raspbian)
-            have apt-get || die "未找到 apt-get。"
+            have apt-get || warn "未找到 apt-get，将尝试从 GitHub 下载 sing-box。"
             export DEBIAN_FRONTEND=noninteractive
-            apt-get update -qq
-            apt-get install -y -qq ca-certificates curl openssl >/dev/null
+            if have apt-get && ! (apt-get update -qq && apt-get install -y -qq ca-certificates curl openssl tar >/dev/null); then
+                warn "Debian 软件源请求或安装依赖失败，将尝试从 GitHub 下载 sing-box。"
+            fi
             rm -rf /var/lib/apt/lists/*
             ;;
         *)
             if have dnf; then
-                dnf install -y ca-certificates curl openssl >/dev/null
+                dnf install -y ca-certificates curl openssl tar >/dev/null || warn "dnf 安装依赖失败，将尝试从 GitHub 下载 sing-box。"
             elif have yum; then
-                yum install -y ca-certificates curl openssl >/dev/null
+                yum install -y ca-certificates curl openssl tar >/dev/null || warn "yum 安装依赖失败，将尝试从 GitHub 下载 sing-box。"
             else
-                die "不支持的发行版：ID=$OS_ID ID_LIKE=$OS_LIKE"
+                warn "未找到可用的软件包管理器，将尝试从 GitHub 下载 sing-box。"
             fi
             ;;
     esac
+
+    have openssl || die "缺少 openssl，无法生成 UUID、证书和密钥。请先手动安装 openssl。"
+    if ! have curl && ! have wget; then
+        die "缺少 curl 或 wget，无法从 GitHub 下载文件。请先安装其中一个。"
+    fi
+    have tar || die "缺少 tar，无法解压 GitHub 发布包。请先手动安装 tar。"
+}
+
+install_sing_box_from_github() {
+    log "从 GitHub Releases 下载 sing-box。"
+    release_json="$(mktemp)"
+    if ! download_file "https://api.github.com/repos/SagerNet/sing-box/releases/latest" "$release_json"; then
+        rm -f "$release_json"
+        die "无法访问 GitHub Releases，也没有可用的 sing-box 安装包。"
+    fi
+
+    tag="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$release_json" | head -n 1)"
+    rm -f "$release_json"
+    [ -n "$tag" ] || die "无法从 GitHub Releases 获取 sing-box 版本。"
+    version="${tag#v}"
+
+    case "$(uname -m)" in
+        x86_64|amd64) arch="amd64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        armv7l|armv7) arch="armv7" ;;
+        armv6l) arch="armv6" ;;
+        armv5l) arch="armv5" ;;
+        i386|i686) arch="386" ;;
+        ppc64le) arch="ppc64le" ;;
+        riscv64) arch="riscv64" ;;
+        s390x) arch="s390x" ;;
+        *) die "GitHub 发布包暂不支持当前架构：$(uname -m)" ;;
+    esac
+
+    libc="glibc"
+    if [ "$OS_ID" = "alpine" ] || (have ldd && ldd --version 2>&1 | grep -qi musl); then
+        libc="musl"
+    fi
+    asset="sing-box-${version}-linux-${arch}-${libc}.tar.gz"
+    url="https://github.com/SagerNet/sing-box/releases/download/${tag}/${asset}"
+    archive="$(mktemp)"
+    if ! download_file "$url" "$archive"; then
+        # Some architectures only publish the generic archive.
+        fallback_asset="sing-box-${version}-linux-${arch}.tar.gz"
+        fallback_url="https://github.com/SagerNet/sing-box/releases/download/${tag}/${fallback_asset}"
+        warn "未找到 $asset，尝试通用包 $fallback_asset。"
+        if ! download_file "$fallback_url" "$archive"; then
+            rm -f "$archive"
+            die "无法下载 sing-box：$asset"
+        fi
+    fi
+
+    extract_dir="$(mktemp -d)"
+    if ! tar -xzf "$archive" -C "$extract_dir"; then
+        rm -f "$archive"
+        rm -rf "$extract_dir"
+        die "sing-box 发布包解压失败。"
+    fi
+    rm -f "$archive"
+    binary="$(find "$extract_dir" -type f -name sing-box -perm -u+x | head -n 1)"
+    [ -n "$binary" ] || binary="$(find "$extract_dir" -type f -name sing-box | head -n 1)"
+    [ -n "$binary" ] || { rm -rf "$extract_dir"; die "发布包中未找到 sing-box 可执行文件。"; }
+    mkdir -p /usr/local/bin
+    cp "$binary" /usr/local/bin/sing-box
+    chmod 755 /usr/local/bin/sing-box
+    rm -rf "$extract_dir"
 }
 
 install_sing_box() {
@@ -83,30 +285,32 @@ install_sing_box() {
         return
     fi
 
+    package_ok=0
     case "$OS_ID" in
         alpine)
-            log "通过 Alpine APK 安装 sing-box。"
-            apk add --no-cache sing-box >/dev/null || die "apk 安装 sing-box 失败。"
+            if have apk && apk add --no-cache sing-box >/dev/null 2>&1; then
+                package_ok=1
+            else
+                warn "Alpine APK 安装失败，切换到 GitHub Releases。"
+            fi
             ;;
         debian|ubuntu|linuxmint|raspbian|alinux|alibabacloudlinux|centos|rhel|rocky|almalinux|fedora)
-            log "通过 sing-box 官方安装器安装。"
             tmp_install="$(mktemp)"
-            curl -fsSL https://sing-box.app/install.sh -o "$tmp_install"
-            sh "$tmp_install"
+            if download_file "https://sing-box.app/install.sh" "$tmp_install" && sh "$tmp_install"; then
+                package_ok=1
+            else
+                warn "官方安装器请求或执行失败，切换到 GitHub Releases。"
+            fi
             rm -f "$tmp_install"
             ;;
         *)
-            case "$OS_LIKE" in
-                *debian*|*rhel*|*fedora*)
-                    tmp_install="$(mktemp)"
-                    curl -fsSL https://sing-box.app/install.sh -o "$tmp_install"
-                    sh "$tmp_install"
-                    rm -f "$tmp_install"
-                    ;;
-                *) die "暂不支持此系统：ID=$OS_ID ID_LIKE=$OS_LIKE" ;;
-            esac
+            warn "当前发行版未匹配官方安装方式，切换到 GitHub Releases。"
             ;;
     esac
+
+    if [ "$package_ok" -ne 1 ] || ! have sing-box; then
+        install_sing_box_from_github
+    fi
     have sing-box || die "sing-box 安装后仍未找到可执行文件。"
 }
 
@@ -115,6 +319,9 @@ get_public_ip() {
     if have curl; then
         ip="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
         [ -n "$ip" ] || ip="$(curl -4fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null || true)"
+    elif have wget; then
+        ip="$(wget -qO- --timeout=5 https://api.ipify.org 2>/dev/null || true)"
+        [ -n "$ip" ] || ip="$(wget -qO- --timeout=5 https://ifconfig.me/ip 2>/dev/null || true)"
     fi
     if [ -z "$ip" ] && have ip; then
         ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i==\"src\") {print $(i+1); exit}}')"
@@ -144,7 +351,9 @@ version_gt() {
 self_update() {
     [ "${SINGBOX_LITE_SKIP_UPDATE:-0}" = "1" ] && return 0
     [ "${SINGBOX_LITE_UPDATE_DONE:-0}" = "1" ] && return 0
-    have curl || return 0
+    if ! have curl && ! have wget; then
+        return 0
+    fi
 
     self_path="$0"
     case "$self_path" in
@@ -160,7 +369,7 @@ self_update() {
     }
 
     tmp_update="$(mktemp)"
-    if ! curl -4fsSL --max-time 10 "$REMOTE_SCRIPT_URL" -o "$tmp_update"; then
+    if ! download_file "$REMOTE_SCRIPT_URL" "$tmp_update"; then
         rm -f "$tmp_update"
         warn "无法检查最新版本，继续使用当前版本 $SCRIPT_VERSION。"
         return 0
@@ -181,7 +390,7 @@ self_update() {
         rm -f "$tmp_update"
         log "发现新版本：$SCRIPT_VERSION -> $remote_version，已覆盖当前脚本并重新执行。"
         export SINGBOX_LITE_UPDATE_DONE=1
-        exec sh "$self_path" "$@"
+        exec sh "$self_path" install "$@"
     fi
 
     rm -f "$tmp_update"
@@ -196,8 +405,12 @@ get_node_region() {
         [ -n "$NODE_REGION_CODE" ] || NODE_REGION_CODE="$(printf '%s' "$geo" | sed -n 's/.*"country_code"[[:space:]]*:[[:space:]]*"\([A-Za-z][A-Za-z]\)".*/\1/p' | head -n 1 | tr '[:lower:]' '[:upper:]')"
         [ -n "$NODE_REGION_EMOJI" ] || NODE_REGION_EMOJI="$(printf '%s' "$geo" | sed -n 's/.*"emoji"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
     fi
-    if [ -z "$NODE_REGION_CODE" ] && have curl; then
-        NODE_REGION_CODE="$(curl -4fsS --max-time 5 "https://ipapi.co/${PUBLIC_IP}/country/" 2>/dev/null | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]' || true)"
+    if [ -z "$NODE_REGION_CODE" ]; then
+        if have curl; then
+            NODE_REGION_CODE="$(curl -4fsS --max-time 5 "https://ipapi.co/${PUBLIC_IP}/country/" 2>/dev/null | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]' || true)"
+        elif have wget; then
+            NODE_REGION_CODE="$(wget -qO- --timeout=5 "https://ipapi.co/${PUBLIC_IP}/country/" 2>/dev/null | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]' || true)"
+        fi
     fi
     [ -n "$NODE_REGION_CODE" ] || NODE_REGION_CODE="XX"
     [ -n "$NODE_REGION_EMOJI" ] || NODE_REGION_EMOJI="🌐"
@@ -234,7 +447,7 @@ SING_BOX="$(command -v sing-box)"
 PUBLIC_IP="${PUBLIC_IP:-$(get_public_ip)}"
 [ -n "$PUBLIC_IP" ] || die "无法自动获取公网 IPv4，请检查网络后重试。"
 get_node_region
-NODE_NAME_BASE="${NODE_REGION_EMOJI}-${NODE_REGION_CODE}"
+NODE_NAME_BASE="${NODE_REGION_EMOJI}${NODE_REGION_CODE}"
 
 mkdir -p "$CONFIG_DIR" "$CLIENT_DIR" /var/lib/sing-box
 chmod 700 "$CONFIG_DIR" "$CLIENT_DIR"
@@ -268,7 +481,7 @@ cat > "$CONFIG_FILE" <<EOF
       "type": "vless",
       "tag": "reality-in",
       "listen": "0.0.0.0",
-      "listen_port": $PORT,
+      "listen_port": $REALITY_PORT,
       "users": [
         {
           "uuid": "$UUID",
@@ -293,7 +506,7 @@ cat > "$CONFIG_FILE" <<EOF
       "type": "hysteria2",
       "tag": "hysteria2-in",
       "listen": "0.0.0.0",
-      "listen_port": $PORT,
+      "listen_port": $HY2_PORT,
       "users": [
         {
           "name": "default",
@@ -335,7 +548,7 @@ cat > "$CLIENT_DIR/reality.json" <<EOF
       "type": "vless",
       "tag": "proxy",
       "server": "$PUBLIC_IP",
-      "server_port": $PORT,
+      "server_port": $REALITY_PORT,
       "uuid": "$UUID",
       "flow": "xtls-rprx-vision",
       "network": "tcp",
@@ -361,7 +574,7 @@ cat > "$CLIENT_DIR/hysteria2.json" <<EOF
       "type": "hysteria2",
       "tag": "proxy",
       "server": "$PUBLIC_IP",
-      "server_port": $PORT,
+      "server_port": $HY2_PORT,
       "password": "$HY2_PASSWORD",
       "tls": {
         "enabled": true,
@@ -447,7 +660,8 @@ sing-box-lite 安装完成
 
 服务器 IPv4: $PUBLIC_IP
 节点名称前缀: $NODE_NAME_BASE
-监听端口: $PORT/TCP + $PORT/UDP
+Reality TCP 端口: $REALITY_PORT
+Hysteria2 UDP 端口: $HY2_PORT
 Reality SNI/握手站点: $REALITY_SNI
 Hysteria2 SNI: $HY2_SNI（自签名证书）
 服务管理: $SERVICE_STATUS
@@ -458,17 +672,20 @@ Hysteria2 SNI: $HY2_SNI（自签名证书）
 - $CLIENT_DIR/links.txt
 
 云厂商安全组/防火墙必须放行:
-- TCP $PORT（Reality）
-- UDP $PORT（Hysteria2）
+- TCP $REALITY_PORT（Reality）
+- UDP $HY2_PORT（Hysteria2）
 
 注意:
 - 本脚本不申请域名、不申请 ACME 证书；Hysteria2 使用自签名证书并要求客户端 insecure=1。
 - 重跑脚本会备份旧配置并生成新凭据，旧客户端将失效。
 - 如服务器位于 NAT 后，客户端地址不能使用脚本检测到的内网地址，需改为公网映射地址。
-- 节点名称格式：地区 Emoji-地区缩写-Vless 或 地区 Emoji-地区缩写-Hy2。
+- 节点名称格式：地区 Emoji地区缩写-Vless 或 地区 Emoji地区缩写-Hy2。
+- 如果系统软件源不可用，sing-box 会自动从 GitHub Releases 下载。
 EOF
 chmod 600 "$CONFIG_DIR/install-info.txt"
 
+view_nodes
+
 log "安装完成。"
 log "客户端链接和 JSON：$CLIENT_DIR"
-log "请确认云安全组放行 TCP $PORT 和 UDP $PORT。"
+log "请确认云安全组放行 TCP $REALITY_PORT 和 UDP $HY2_PORT。"

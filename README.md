@@ -1,21 +1,11 @@
-# sing-box-lite（测试中）
-
-
-### 立马安装
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
-chmod +x install-singbox-lite.sh
-./install-singbox-lite.sh
-```
-
+# sing-box-lite
 
 一个面向 **64MB / 128MB 小内存 VPS** 的极简 sing-box 安装脚本，自动配置：
 
 - **VLESS + Reality**：TCP
 - **Hysteria2**：UDP
 
-脚本只需要询问监听端口，其余参数会自动生成或检测。
+脚本会分别询问 Reality 的 TCP 端口和 Hysteria2 的 UDP 端口，其余参数会自动生成或检测。
 
 > 适合个人测试、小型 VPS 和低内存环境。脚本不会安装面板、数据库、Docker、DNS、TUN 或统计服务，但最终内存占用仍取决于操作系统和 VPS 上运行的其他服务。
 
@@ -23,7 +13,7 @@ chmod +x install-singbox-lite.sh
 
 - 自动获取公网 IPv4 地址
 - 自动生成 UUID、Reality 密钥对、Short ID 和 Hysteria2 密码
-- 使用同一个数字端口同时监听 TCP 和 UDP
+- Reality 和 Hysteria2 使用分开的端口，避免端口占用或部署环境差异造成冲突
 - Hysteria2 默认使用轻量 ECDSA 自签名证书，不需要域名或 ACME
 - 自动识别并适配：
   - Debian / Ubuntu
@@ -53,32 +43,61 @@ chmod +x install-singbox-lite.sh
 git clone https://github.com/yanjie233/sing-box-lite.git
 cd sing-box-lite
 chmod +x install-singbox-lite.sh
-./install-singbox-lite.sh
+sudo ./install-singbox-lite.sh
 ```
 
-### （推荐）方式二：下载脚本
+### 方式二：下载脚本
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
 chmod +x install-singbox-lite.sh
-./install-singbox-lite.sh
+sudo ./install-singbox-lite.sh
 ```
 
-脚本只会询问一次端口：
+脚本会分别询问两个端口：
 
 ```text
-请输入监听端口（TCP+UDP，例如 443）：
+请输入 Reality TCP 监听端口（例如 443）：
+请输入 Hysteria2 UDP 监听端口（例如 8443）：
 ```
 
 也可以直接传入端口，跳过交互：
 
 ```sh
-sudo ./install-singbox-lite.sh 443
+sudo ./install-singbox-lite.sh 443 8443
 ```
+
+第一个端口是 Reality TCP，第二个端口是 Hysteria2 UDP；两个端口可以不同。
+
+## 菜单功能
+
+不带参数运行脚本会显示菜单：
+
+```text
+1) 安装 / 更新
+2) 卸载
+3) 查看节点
+0) 退出
+```
+
+也可以直接使用命令：
+
+```sh
+# 安装或更新，分别询问 TCP 和 UDP 端口
+sudo ./install-singbox-lite.sh install 443 8443
+
+# 卸载服务、配置、证书、节点链接和本地 sing-box 二进制
+sudo ./install-singbox-lite.sh uninstall
+
+# 查看已生成的 VLESS / Hysteria2 节点链接
+sudo ./install-singbox-lite.sh nodes
+```
+
+卸载操作需要输入 `yes` 确认，并且不会删除 `curl`、`wget`、`openssl`、`tar` 等系统依赖。
 
 ## 版本与自动更新
 
-当前脚本版本：`1.1.0`
+当前脚本版本：`1.3.0`
 
 查看版本：
 
@@ -88,39 +107,50 @@ sudo ./install-singbox-lite.sh 443
 
 脚本在安装开始前会检查 GitHub 上的最新 `install-singbox-lite.sh`。如果远程版本号高于本地版本号，脚本会：
 
-1. 备份当前脚本，例如 `install-singbox-lite.sh.bak.1.0.0`
+1. 备份当前脚本，例如 `install-singbox-lite.sh.bak.1.2.0`
 2. 下载并覆盖当前脚本
 3. 使用原有参数重新执行安装流程
 
 如果脚本是通过管道执行，或当前文件不可写，则会跳过自动更新。也可以手动关闭更新：
 
 ```sh
-SINGBOX_LITE_SKIP_UPDATE=1 sudo -E ./install-singbox-lite.sh 443
+SINGBOX_LITE_SKIP_UPDATE=1 sudo -E ./install-singbox-lite.sh 443 8443
 ```
 
 如果你把脚本复制到了自己的仓库，可以覆盖更新地址：
 
 ```sh
 REMOTE_SCRIPT_URL=https://raw.githubusercontent.com/你的用户名/你的仓库/main/install-singbox-lite.sh \
-  sudo -E ./install-singbox-lite.sh 443
+  sudo -E ./install-singbox-lite.sh 443 8443
 ```
 
 更新失败不会中断安装，脚本会继续使用当前版本。
 
+## 安装方式和 GitHub 回退
+
+安装时会按以下顺序尝试获取 sing-box：
+
+1. Alpine 使用 APK；Debian / Ubuntu 等系统使用官方安装器
+2. 如果软件源、官方安装器或网络请求失败，自动切换到 GitHub Releases
+3. 根据当前 CPU 架构和 glibc / musl 环境选择对应的压缩包
+4. 解压后安装到 `/usr/local/bin/sing-box`
+
+GitHub 下载失败时，脚本会显示明确错误并停止，不会生成不完整的服务配置。基础依赖仍需要系统中存在 `openssl`、`tar` 以及 `curl` 或 `wget`；如果系统软件源完全不可用且这些依赖也不存在，请先手动安装它们。
+
 ## 安全组和防火墙
 
-安装完成后，请在云厂商安全组和服务器防火墙中放行同一个端口的两种协议：
+安装完成后，脚本会直接在终端打印节点链接；同时请在云厂商安全组和服务器防火墙中分别放行两个端口：
 
 | 协议 | 用途 |
 | --- | --- |
 | TCP | VLESS Reality |
 | UDP | Hysteria2 |
 
-例如使用 `443` 时，需要放行：
+例如 Reality 使用 `443`、Hysteria2 使用 `8443` 时，需要放行：
 
 ```text
 TCP 443
-UDP 443
+UDP 8443
 ```
 
 脚本不会替你修改云厂商安全组规则。如果服务器位于 NAT 后，请确认自动检测出的地址确实是客户端可访问的公网地址。
@@ -228,10 +258,10 @@ tail -n 100 /var/log/sing-box.err
 
 ## 可选环境变量
 
-脚本默认只询问端口；在特殊网络环境下，可以在执行前覆盖自动检测值：
+脚本会询问两个端口；在特殊网络环境下，可以在执行前覆盖自动检测值：
 
 ```sh
-PUBLIC_IP=203.0.113.10 NODE_REGION_CODE=HK NODE_REGION_EMOJI=🇭🇰 sudo -E ./install-singbox-lite.sh 443
+PUBLIC_IP=203.0.113.10 NODE_REGION_CODE=HK NODE_REGION_EMOJI=🇭🇰 sudo -E ./install-singbox-lite.sh 443 8443
 ```
 
 通常不需要设置这些变量。
@@ -241,15 +271,15 @@ PUBLIC_IP=203.0.113.10 NODE_REGION_CODE=HK NODE_REGION_EMOJI=🇭🇰 sudo -E ./
 脚本会将公网 IP 的地区信息用于生成节点名称。默认格式为：
 
 ```text
-地区 Emoji-地区缩写-Vless
-地区 Emoji-地区缩写-Hy2
+地区 Emoji地区缩写-Vless
+地区 Emoji地区缩写-Hy2
 ```
 
 例如香港服务器会生成类似下面的链接：
 
 ```text
-vless://UUID@SERVER:443/?...#🇭🇰-HK-Vless
-hysteria2://PASSWORD@SERVER:443/?...#🇭🇰-HK-Hy2
+vless://UUID@SERVER:443/?...#🇭🇰HK-Vless
+hysteria2://PASSWORD@SERVER:8443/?...#🇭🇰HK-Hy2
 ```
 
 实际完整链接会保存在：
@@ -258,10 +288,12 @@ hysteria2://PASSWORD@SERVER:443/?...#🇭🇰-HK-Hy2
 /etc/sing-box/clients/links.txt
 ```
 
-如果地区接口不可用，脚本会使用 `🌐-XX` 作为兜底名称。也可以手动指定地区，避免自动识别：
+安装成功时，脚本会自动把这两个链接直接打印到终端，不需要用户再手动执行 `cat`。
+
+如果地区接口不可用，脚本会使用 `🌐XX` 作为兜底名称。也可以手动指定地区，避免自动识别：
 
 ```sh
-NODE_REGION_CODE=HK NODE_REGION_EMOJI=🇭🇰 sudo -E ./install-singbox-lite.sh 443
+NODE_REGION_CODE=HK NODE_REGION_EMOJI=🇭🇰 sudo -E ./install-singbox-lite.sh 443 8443
 ```
 
 其中 `NODE_REGION_CODE` 建议使用两位地区缩写，例如 `HK`、`US`、`JP`、`SG`；`NODE_REGION_EMOJI` 使用对应的国旗或地区 Emoji。
