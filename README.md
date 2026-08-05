@@ -1,4 +1,4 @@
-# sing-box-lite
+# sing-box-lite（测试中）
 
 一个面向 **64MB / 128MB 小内存 VPS** 的极简 sing-box 安装脚本，自动配置：
 
