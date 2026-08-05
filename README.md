@@ -55,11 +55,12 @@ chmod +x install-singbox-lite.sh
 sudo ./install-singbox-lite.sh
 ```
 
-脚本会分别询问两个端口：
+脚本会分别询问两个端口，然后询问 Reality 握手域名：
 
 ```text
 请输入 Reality TCP 监听端口（例如 443）：
 请输入 Hysteria2 UDP 监听端口（例如 8443）：
+请输入 Reality 自定义域名（直接回车使用默认 www.cloudflare.com）：
 ```
 
 也可以直接传入端口，跳过交互：
@@ -68,7 +69,27 @@ sudo ./install-singbox-lite.sh
 sudo ./install-singbox-lite.sh 443 8443
 ```
 
-第一个端口是 Reality TCP，第二个端口是 Hysteria2 UDP；两个端口可以不同。
+第一个端口是 Reality TCP，第二个端口是 Hysteria2 UDP；两个端口可以不同。Reality 域名直接回车时使用 `www.cloudflare.com`。
+
+## Reality 自定义域名
+
+安装时可以为 Reality 指定握手域名：
+
+```text
+请输入 Reality 自定义域名（直接回车使用默认 www.cloudflare.com）：
+```
+
+- 直接回车：使用 `www.cloudflare.com`
+- 输入域名：使用你指定的域名，例如 `www.microsoft.com`
+- 该域名必须支持 TLS，并且从服务器网络可以访问
+- 修改域名后会生成新的 Reality 配置和新的节点链接
+
+命令行环境也可以通过环境变量预设：
+
+```sh
+REALITY_SNI=www.microsoft.com \
+  sudo -E ./install-singbox-lite.sh install 55667 55668
+```
 
 ## 菜单功能
 
@@ -98,7 +119,7 @@ sudo ./install-singbox-lite.sh nodes
 
 ## 版本与自动更新
 
-当前脚本版本：`1.8.1`
+当前脚本版本：`1.9.0`
 
 查看版本：
 

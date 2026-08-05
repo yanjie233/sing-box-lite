@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: one-port installer for VLESS-Reality + Hysteria2
-SCRIPT_VERSION="1.8.1"
+SCRIPT_VERSION="1.9.0"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 # Supports Debian/Ubuntu, Alpine, and Alibaba Linux/RHEL-like systems.
 # It only prompts for the port; all credentials and the server IP are generated/detected automatically.
@@ -12,7 +12,7 @@ CONFIG_FILE="$CONFIG_DIR/config.json"
 CLIENT_DIR="$CONFIG_DIR/clients"
 CERT_FILE="$CONFIG_DIR/server.crt"
 KEY_FILE="$CONFIG_DIR/server.key"
-REALITY_SNI="${REALITY_SNI:-www.iij.ad.jp}"
+REALITY_SNI="${REALITY_SNI:-www.cloudflare.com}"
 HY2_SNI="${HY2_SNI:-www.example.com}"
 REALITY_FINGERPRINT="${REALITY_FINGERPRINT:-firefox}"
 NODE_REGION_CODE="${NODE_REGION_CODE:-}"
@@ -163,6 +163,22 @@ if [ -z "$HY2_PORT" ]; then
     printf '请输入 Hysteria2 UDP 监听端口（例如 8443）：'
     read -r HY2_PORT
 fi
+if [ -z "${REALITY_SNI_INPUT:-}" ]; then
+    printf '请输入 Reality 自定义域名（直接回车使用默认 www.cloudflare.com）：'
+    read -r REALITY_SNI_INPUT
+fi
+if [ -n "$REALITY_SNI_INPUT" ]; then
+    REALITY_SNI="$REALITY_SNI_INPUT"
+fi
+
+validate_domain() {
+    domain="$1"
+    case "$domain" in
+        ''|*[!A-Za-z0-9.-]*) die "Reality 域名格式无效：$domain" ;;
+        .*|*.|*..*) die "Reality 域名格式无效：$domain" ;;
+    esac
+}
+validate_domain "$REALITY_SNI"
 
 validate_port() {
     port="$1"
