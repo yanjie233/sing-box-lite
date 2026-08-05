@@ -13,6 +13,7 @@
 
 - 自动获取公网 IPv4 地址
 - 自动生成 UUID、Reality 密钥对、Short ID 和 Hysteria2 密码
+- Reality 默认使用空 Short ID，并在链接中省略 `sid` 参数，以兼容 Clash.Meta、Xray 等客户端
 - Reality 和 Hysteria2 使用分开的端口，避免端口占用或部署环境差异造成冲突
 - Hysteria2 默认使用轻量 ECDSA 自签名证书，不需要域名或 ACME
 - 自动识别并适配：
@@ -97,7 +98,7 @@ sudo ./install-singbox-lite.sh nodes
 
 ## 版本与自动更新
 
-当前脚本版本：`1.6.0`
+当前脚本版本：`1.8.1`
 
 查看版本：
 
@@ -173,10 +174,12 @@ UDP 8443
 
 ### VLESS Reality
 
+为兼容 Clash.Meta、Xray 等客户端，本项目默认使用空 Short ID：服务端配置为 `"short_id": [""]`，VLESS 链接不带 `sid` 参数。重新安装后必须使用新生成的链接。
+
 脚本生成的链接包含：
 
 - 服务器地址和端口
-- Chrome 浏览器 TLS 指纹（`fp=chrome`）
+- Chrome 浏览器 TLS 指纹（`fp=firefox`）
 - UUID
 - Reality 公钥
 - Short ID

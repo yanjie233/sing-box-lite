@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: one-port installer for VLESS-Reality + Hysteria2
-SCRIPT_VERSION="1.6.0"
+SCRIPT_VERSION="1.8.1"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 # Supports Debian/Ubuntu, Alpine, and Alibaba Linux/RHEL-like systems.
 # It only prompts for the port; all credentials and the server IP are generated/detected automatically.
@@ -12,8 +12,9 @@ CONFIG_FILE="$CONFIG_DIR/config.json"
 CLIENT_DIR="$CONFIG_DIR/clients"
 CERT_FILE="$CONFIG_DIR/server.crt"
 KEY_FILE="$CONFIG_DIR/server.key"
-REALITY_SNI="${REALITY_SNI:-www.microsoft.com}"
+REALITY_SNI="${REALITY_SNI:-www.iij.ad.jp}"
 HY2_SNI="${HY2_SNI:-www.example.com}"
+REALITY_FINGERPRINT="${REALITY_FINGERPRINT:-firefox}"
 NODE_REGION_CODE="${NODE_REGION_CODE:-}"
 NODE_REGION_EMOJI="${NODE_REGION_EMOJI:-}"
 REALITY_PORT=""
@@ -460,7 +461,6 @@ fi
 
 UUID="$(make_uuid)"
 HY2_PASSWORD="$(openssl rand -hex 24)"
-SHORT_ID="$(openssl rand -hex 8)"
 
 KEYPAIR="$($SING_BOX generate reality-keypair)"
 REALITY_PRIVATE_KEY="$(printf '%s\n' "$KEYPAIR" | awk -F': ' '/PrivateKey/ {print $2; exit}')"
@@ -498,7 +498,7 @@ cat > "$CONFIG_FILE" <<EOF
             "server_port": 443
           },
           "private_key": "$REALITY_PRIVATE_KEY",
-          "short_id": "$SHORT_ID"
+          "short_id": [""]
         }
       }
     },
@@ -557,12 +557,11 @@ cat > "$CLIENT_DIR/reality.json" <<EOF
         "server_name": "$REALITY_SNI",
         "utls": {
           "enabled": true,
-          "fingerprint": "chrome"
+          "fingerprint": "$REALITY_FINGERPRINT"
         },
         "reality": {
           "enabled": true,
-          "public_key": "$REALITY_PUBLIC_KEY",
-          "short_id": "$SHORT_ID"
+          "public_key": "$REALITY_PUBLIC_KEY"
         }
       }
     }
@@ -590,7 +589,7 @@ cat > "$CLIENT_DIR/hysteria2.json" <<EOF
 }
 EOF
 
-REALITY_LINK="vless://${UUID}@${URL_HOST}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SNI}&fp=chrome&pbk=${REALITY_PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#${NODE_NAME_BASE}-Vless"
+REALITY_LINK="vless://${UUID}@${URL_HOST}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SNI}&fp=${REALITY_FINGERPRINT}&pbk=${REALITY_PUBLIC_KEY}&type=tcp&headerType=none#${NODE_NAME_BASE}-Vless"
 HY2_LINK="hysteria2://${HY2_PASSWORD}@${URL_HOST}:${HY2_PORT}/?insecure=1&sni=${HY2_SNI}#${NODE_NAME_BASE}-Hy2"
 
 cat > "$CLIENT_DIR/links.txt" <<EOF
@@ -667,6 +666,8 @@ sing-box-lite 安装完成
 Reality TCP 端口: $REALITY_PORT
 Hysteria2 UDP 端口: $HY2_PORT
 Reality SNI/握手站点: $REALITY_SNI
+Reality TLS 指纹: $REALITY_FINGERPRINT
+Reality Short ID: 空（兼容更多客户端）
 Hysteria2 SNI: $HY2_SNI（自签名证书）
 服务管理: $SERVICE_STATUS
 
@@ -684,6 +685,7 @@ Hysteria2 SNI: $HY2_SNI（自签名证书）
 - 重跑脚本会备份旧配置并生成新凭据，旧客户端将失效。
 - 如服务器位于 NAT 后，客户端地址不能使用脚本检测到的内网地址，需改为公网映射地址。
 - 节点名称格式：地区 Emoji地区缩写-Vless 或 地区 Emoji地区缩写-Hy2。
+- Reality 使用空 Short ID，并在链接中省略 sid 参数，以兼容 Clash.Meta、Xray 等客户端。
 - 如果系统软件源不可用，sing-box 会自动从 GitHub Releases 下载。
 EOF
 chmod 600 "$CONFIG_DIR/install-info.txt"
