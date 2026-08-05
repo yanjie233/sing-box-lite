@@ -1,5 +1,11 @@
 # sing-box-lite
 
+一个面向 **64MB / 128MB 小内存 VPS** 的极简 sing-box 安装脚本，自动配置：
+
+**VLESS + Reality** 和 **Hysteria2**
+
+你只需要准备好两个可用的端口，里面就能体验畅快的网络！
+
 ## 快速开始
 
 ### Debian/Ubuntu
@@ -20,13 +26,6 @@ chmod +x install-singbox-lite.sh
 ---
 
 ## Codex的废话
-
-一个面向 **64MB / 128MB 小内存 VPS** 的极简 sing-box 安装脚本，自动配置：
-
-- **VLESS + Reality**：TCP
-- **Hysteria2**：UDP
-
-脚本会分别询问 Reality 的 TCP 端口和 Hysteria2 的 UDP 端口，其余参数会自动生成或检测。
 
 > 适合个人测试、小型 VPS 和低内存环境。脚本不会安装面板、数据库、Docker、DNS、TUN 或统计服务，但最终内存占用仍取决于操作系统和 VPS 上运行的其他服务。
 
