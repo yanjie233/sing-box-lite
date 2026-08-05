@@ -97,7 +97,7 @@ sudo ./install-singbox-lite.sh nodes
 
 ## 版本与自动更新
 
-当前脚本版本：`1.3.0`
+当前脚本版本：`1.4.0`
 
 查看版本：
 
