@@ -1,5 +1,14 @@
 # sing-box-lite
 
+### 不多废话，直接开始！
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
+chmod +x install-singbox-lite.sh
+./install-singbox-lite.sh
+```
+
+
 一个面向 **64MB / 128MB 小内存 VPS** 的极简 sing-box 安装脚本，自动配置：
 
 - **VLESS + Reality**：TCP
@@ -38,7 +47,15 @@
 
 ## 快速开始
 
-### 方式一：克隆仓库
+### 方式一：下载脚本
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
+chmod +x install-singbox-lite.sh
+sudo ./install-singbox-lite.sh
+```
+
+### 方式二：克隆仓库
 
 ```sh
 git clone https://github.com/yanjie233/sing-box-lite.git
@@ -47,13 +64,7 @@ chmod +x install-singbox-lite.sh
 sudo ./install-singbox-lite.sh
 ```
 
-### 方式二：下载脚本
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
-chmod +x install-singbox-lite.sh
-sudo ./install-singbox-lite.sh
-```
 
 脚本会分别询问两个端口，然后询问 Reality 握手域名：
 
