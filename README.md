@@ -7,7 +7,7 @@
 ```sh
 curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
 chmod +x install-singbox-lite.sh
-./install-singbox-lite.sh
+sudo ./install-singbox-lite.sh
 ```
 
 安装完成后，脚本会创建快捷菜单命令：
@@ -174,3 +174,23 @@ Hysteria2：UDP <Hysteria2端口>
 - IP 证书取决于当前 acme.sh 和 CA 对 IP 证书流程的支持；申请失败时请查看 acme.sh 输出。
 - 请只在你拥有或获授权管理的服务器上使用，并遵守所在地法律、云服务商条款和网络运营商政策。
 
+
+## 故障排查：`./install-singbox-lite.sh: not found`
+
+如果 Alpine、Debian 等 Linux 服务器执行脚本时出现 `not found`，但文件确实存在，通常是脚本首行包含 Windows 换行符（`CRLF`），导致系统把解释器识别成 `/bin/sh^M`。请先转换为 Linux 换行符，再执行：
+
+```sh
+sed -i 's/\r$//' install-singbox-lite.sh
+chmod 755 install-singbox-lite.sh
+/bin/sh ./install-singbox-lite.sh
+```
+
+重新下载时请确保 URL 在同一行，并使用：
+
+```sh
+curl -fsSL 'https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh' \
+  -o install-singbox-lite.sh
+sed -i 's/\r$//' install-singbox-lite.sh
+chmod 755 install-singbox-lite.sh
+./install-singbox-lite.sh
+```
