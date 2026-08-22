@@ -1,350 +1,176 @@
 # sing-box-lite
 
-一个面向 **64MB / 128MB 小内存 VPS** 的极简 sing-box 安装脚本，自动配置：
-
-**VLESS + Reality** 和 **Hysteria2**
-
-你只需要准备好两个可用的端口，里面就能体验畅快的网络！
+面向小内存 Linux VPS 的 sing-box 一键安装与管理脚本，支持 **VLESS + Reality** 和 **Hysteria2**。
 
 ## 快速开始
-
-### Debian/Ubuntu
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
 chmod +x install-singbox-lite.sh
 sudo ./install-singbox-lite.sh
 ```
-### Alpine
-```sh
-apk update && apk add --no-cache curl wget openssl tar
-curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
-chmod +x install-singbox-lite.sh
-./install-singbox-lite.sh
-```
 
----
-
-## Codex的废话
-
-> 适合个人测试、小型 VPS 和低内存环境。脚本不会安装面板、数据库、Docker、DNS、TUN 或统计服务，但最终内存占用仍取决于操作系统和 VPS 上运行的其他服务。
-
-## 功能
-
-- 自动获取公网 IPv4 地址
-- 自动生成 UUID、Reality 密钥对、Short ID 和 Hysteria2 密码
-- Reality 默认使用空 Short ID，并在链接中省略 `sid` 参数，以兼容 Clash.Meta、Xray 等客户端
-- Reality 和 Hysteria2 使用分开的端口，避免端口占用或部署环境差异造成冲突
-- Hysteria2 默认使用轻量 ECDSA 自签名证书，不需要域名或 ACME
-- 自动识别并适配：
-  - Debian / Ubuntu
-  - Alpine Linux
-  - Alibaba Cloud Linux / RHEL 系
-- 自动创建 systemd 或 OpenRC 服务
-- 生成 sing-box 客户端出站模板和 VLESS / Hysteria2 导入链接
-- 重复执行时自动备份旧配置
-- 每次运行自动检查 GitHub 最新脚本版本，发现新版本后自动覆盖并重新执行
-- 自动更新前会备份旧脚本
-
-## 支持环境
-
-脚本面向 Linux VPS，需要 root 权限和可用的包管理器。推荐使用：
-
-- Debian 或 Ubuntu 最小化系统
-- Alpine Linux
-- Alibaba Cloud Linux
-
-建议 64MB 机器关闭不必要的 Web 面板、Docker、监控和日志服务，并预留少量磁盘交换空间。
-
-脚本会分别询问两个端口（默认 Reality TCP `55667`、Hysteria2 UDP `55668`），然后询问 Reality 握手域名：
-
-```text
-请输入 Reality TCP 监听端口（默认 55667，直接回车使用默认）：
-请输入 Hysteria2 UDP 监听端口（默认 55668，直接回车使用默认）：
-请输入 Reality 自定义域名（直接回车使用默认 www.cloudflare.com）：
-```
-
-也可以直接传入端口，跳过交互：
+安装完成后，脚本会创建快捷菜单命令：
 
 ```sh
-sudo ./install-singbox-lite.sh 443 8443
+singbox
 ```
 
-第一个端口是 Reality TCP，第二个端口是 Hysteria2 UDP；两个端口可以不同。Reality 域名直接回车时使用 `www.cloudflare.com`。
-
-## Reality 自定义域名
-
-安装时可以为 Reality 指定握手域名：
-
-```text
-请输入 Reality 自定义域名（直接回车使用默认 www.cloudflare.com）：
-```
-
-- 直接回车：使用 `www.cloudflare.com`
-- 输入域名：使用你指定的域名，例如 `www.microsoft.com`
-- 该域名必须支持 TLS，并且从服务器网络可以访问
-- 修改域名后会生成新的 Reality 配置和新的节点链接
-
-命令行环境也可以通过环境变量预设：
+如果源码文件和 `singbox` 在同一目录，也可以直接运行：
 
 ```sh
-REALITY_SNI=www.microsoft.com \
-  sudo -E ./install-singbox-lite.sh install 55667 55668
+./singbox
 ```
 
 ## 菜单功能
 
-不带参数运行脚本会显示菜单：
-
 ```text
-1) 安装 / 更新
-2) 卸载
-3) 查看节点
-4) 运行状态查询
-5) 状态管理（关闭 / 重启 / 开启）
-0) 退出
+1. 一键快捷安装       Reality + Hysteria2，使用默认端口和自签名证书
+2. 自定义安装         选择全部、仅 Reality 或仅 Hysteria2
+3. 状态查询及管理     分别查看、开启、关闭、重启两个协议
+4. 节点信息           查看导入链接和客户端配置文件
+5. 升级脚本、singbox  更新管理脚本和 sing-box 二进制
+6. 完全卸载           删除服务、配置、证书、节点信息和快捷命令
+0. 退出
 ```
 
-也可以直接使用命令：
+## 自定义安装
+
+自定义安装可以选择：
+
+- Reality + Hysteria2
+- 仅 VLESS Reality
+- 仅 Hysteria2
+
+端口分别使用 TCP 和 UDP，脚本会为实际安装的协议创建独立服务：
+
+| 协议 | 服务名 | 配置文件 | 默认端口 |
+| --- | --- | --- | --- |
+| VLESS Reality | `sing-box-reality` | `/etc/sing-box/config-reality.json` | TCP `55667` |
+| Hysteria2 | `sing-box-hysteria2` | `/etc/sing-box/config-hysteria2.json` | UDP `55668` |
+
+两个协议现在可以独立管理，不再必须一起启动或停止。
+
+## 证书申请与部署
+
+安装 Hysteria2 时可选择：
+
+1. **自签名证书**：无需域名，节点链接会带 `insecure=1`。
+2. **域名证书**：通过 `acme.sh` 自动申请并部署到 sing-box。
+3. **IP 证书**：调用当前 acme.sh 的 IP 证书流程申请并部署。
+
+申请证书时可以输入：
+
+- 域名（域名证书模式）
+- ACME 账户邮箱
+- HTTP 验证端口，默认 `80`
+
+验证端口必须能从公网访问；如果前面有端口转发，请把公网验证端口转发到脚本设置的本地端口。证书申请失败时脚本会停止，不会用不完整证书启动 Hysteria2。
+
+## 命令行用法
 
 ```sh
-# 安装或更新，分别询问 TCP 和 UDP 端口
+# 打开菜单
+sudo ./install-singbox-lite.sh
+sudo ./singbox
+
+# 安装全部协议，兼容旧用法
 sudo ./install-singbox-lite.sh install 443 8443
 
-# 卸载服务、配置、证书、节点链接和本地 sing-box 二进制
-sudo ./install-singbox-lite.sh uninstall
+# 显式安装全部协议
+sudo ./install-singbox-lite.sh install both 443 8443
 
-# 查看已生成的 VLESS / Hysteria2 节点链接
+# 只安装 Reality
+sudo ./install-singbox-lite.sh install reality 443
+
+# 只安装 Hysteria2
+sudo ./install-singbox-lite.sh install hy2 8443
+
+# 查询两个协议状态
+sudo ./install-singbox-lite.sh status
+
+# 进入独立协议管理菜单
+sudo ./install-singbox-lite.sh manage
+
+# 查看节点链接
 sudo ./install-singbox-lite.sh nodes
 
-# 查询运行状态
-sudo ./install-singbox-lite.sh status
+# 升级脚本和 sing-box
+sudo ./install-singbox-lite.sh upgrade
 
-# 进入关闭 / 重启 / 开启菜单
-sudo ./install-singbox-lite.sh manage
-```
+# 完全卸载
+sudo ./install-singbox-lite.sh uninstall
 
-卸载操作需要输入 `yes` 确认，并且不会删除 `curl`、`wget`、`openssl`、`tar` 等系统依赖。
-
-## 运行状态与状态管理
-
-菜单中提供：
-
-- **运行状态查询**：查看 systemd / OpenRC 状态、进程、监听端口和安装信息
-- **状态管理**：关闭、重启或开启 sing-box 服务
-
-也可以直接执行：
-
-```sh
-sudo ./install-singbox-lite.sh status
-sudo ./install-singbox-lite.sh manage
-```
-
-## 版本与自动更新
-
-当前脚本版本：`2.0.1`
-
-查看版本：
-
-```sh
+# 查看脚本版本
 ./install-singbox-lite.sh --version
 ```
 
-脚本在安装开始前会检查 GitHub 上的最新 `install-singbox-lite.sh`。如果远程版本号高于本地版本号，脚本会：
-
-1. 备份当前脚本，例如 `install-singbox-lite.sh.bak.1.2.0`
-2. 下载并覆盖当前脚本
-3. 使用原有参数重新执行安装流程
-
-如果脚本是通过管道执行，或当前文件不可写，则会跳过自动更新。也可以手动关闭更新：
-
-```sh
-SINGBOX_LITE_SKIP_UPDATE=1 sudo -E ./install-singbox-lite.sh 443 8443
-```
-
-如果你把脚本复制到了自己的仓库，可以覆盖更新地址：
-
-```sh
-REMOTE_SCRIPT_URL=https://raw.githubusercontent.com/你的用户名/你的仓库/main/install-singbox-lite.sh \
-  sudo -E ./install-singbox-lite.sh 443 8443
-```
-
-更新失败不会中断安装，脚本会继续使用当前版本。
-
-## 安装方式和 GitHub 回退
-
-安装时会按以下顺序尝试获取 sing-box：
-
-1. Alpine 使用 APK；Debian / Ubuntu 等系统使用官方安装器
-2. 如果软件源、官方安装器或网络请求失败，自动切换到 GitHub Releases
-3. 根据当前 CPU 架构和 glibc / musl 环境选择对应的压缩包
-4. 解压后安装到 `/usr/local/bin/sing-box`
-
-GitHub 下载失败时，脚本会显示明确错误并停止，不会生成不完整的服务配置。基础依赖仍需要系统中存在 `openssl`、`tar` 以及 `curl` 或 `wget`；如果系统软件源完全不可用且这些依赖也不存在，请先手动安装它们。
-
-## 安全组和防火墙
-
-安装完成后，脚本会直接在终端打印节点链接；同时请在云厂商安全组和服务器防火墙中分别放行两个端口：
-
-| 协议 | 用途 |
-| --- | --- |
-| TCP | VLESS Reality |
-| UDP | Hysteria2 |
-
-例如 Reality 使用 `443`、Hysteria2 使用 `8443` 时，需要放行：
-
-```text
-TCP 443
-UDP 8443
-```
-
-脚本不会替你修改云厂商安全组规则。如果服务器位于 NAT 后，请确认自动检测出的地址确实是客户端可访问的公网地址。
-
-## 安装后的文件
-
-| 文件 | 说明 |
-| --- | --- |
-| `/etc/sing-box/config.json` | 服务端主配置 |
-| `/etc/sing-box/clients/reality.json` | Reality 客户端出站模板 |
-| `/etc/sing-box/clients/hysteria2.json` | Hysteria2 客户端出站模板 |
-| `/etc/sing-box/clients/links.txt` | VLESS Reality 和 Hysteria2 导入链接 |
-| `/etc/sing-box/install-info.txt` | 安装信息和服务管理提示 |
-| `/etc/sing-box/server.crt` | Hysteria2 自签名证书 |
-| `/etc/sing-box/server.key` | Hysteria2 私钥 |
-
-客户端凭据属于敏感信息，脚本会将相关文件设置为仅 root 可读。请不要把 `links.txt` 提交到公开仓库或发送给不可信的人。
-
-## 客户端说明
-
-### VLESS Reality
-
-为兼容 Clash.Meta、Xray 等客户端，本项目默认使用空 Short ID：服务端配置为 `"short_id": [""]`，VLESS 链接不带 `sid` 参数。重新安装后必须使用新生成的链接。
-
-脚本生成的链接包含：
-
-- 服务器地址和端口
-- Chrome 浏览器 TLS 指纹（`fp=firefox`）
-- UUID
-- Reality 公钥
-- Short ID
-- SNI / 握手站点
-- `xtls-rprx-vision` 流控
-
-将 `/etc/sing-box/clients/links.txt` 中的 VLESS 链接导入支持 Reality 的客户端即可。
-
-### Hysteria2
-
-脚本默认生成自签名证书，因此 Hysteria2 链接包含：
-
-```text
-insecure=1
-```
-
-这表示客户端不校验证书。它便于无需域名快速部署，但安全性不如受信任证书。生产环境建议使用域名和正规 CA 证书，并相应修改服务端 TLS 配置。
-
 ## 服务管理
 
-### systemd
+菜单中的“状态查询及管理”会显示：
 
-```sh
-systemctl status sing-box
-systemctl restart sing-box
-journalctl -u sing-box -e --no-pager
-```
+- Reality 是否运行
+- Hysteria2 是否运行
+- 两个协议的监听协议和端口
+- 监听端口及服务状态
 
-### OpenRC / Alpine
-
-```sh
-rc-service sing-box status
-rc-service sing-box restart
-tail -f /var/log/sing-box.log
-```
-
-## 常见问题
-
-### 1. 服务启动失败
-
-先检查配置：
-
-```sh
-sing-box check -c /etc/sing-box/config.json
-```
-
-再查看日志：
-
-```sh
-journalctl -u sing-box -e --no-pager
-```
-
-Alpine / OpenRC 使用：
-
-```sh
-tail -n 100 /var/log/sing-box.log
-tail -n 100 /var/log/sing-box.err
-```
-
-### 2. 客户端无法连接
-
-按以下顺序检查：
-
-1. 云安全组是否同时放行 TCP 和 UDP 端口
-2. VPS 本机防火墙是否放行端口
-3. 客户端地址是否为公网地址
-4. Reality 的 SNI、公钥和 Short ID 是否来自同一次安装
-5. Hysteria2 客户端是否启用了 `insecure=1`
-6. 端口是否已被其他服务占用
-
-### 3. 重跑脚本后旧链接失效
-
-这是正常行为。脚本重跑会备份旧配置，并重新生成 UUID、密钥和密码。旧配置备份文件类似：
+并提供以下操作：
 
 ```text
-/etc/sing-box/config.json.bak.20260805-120000
+开启 Reality / 关闭 Reality / 重启 Reality
+开启 Hysteria2 / 关闭 Hysteria2 / 重启 Hysteria2
+开启全部 / 关闭全部 / 重启全部
 ```
 
-如不需要更换凭据，请不要重复执行安装脚本。
+脚本优先使用 systemd；Alpine 等环境使用 OpenRC。
 
-## 可选环境变量
+## 安装文件
 
-脚本会询问两个端口；在特殊网络环境下，可以在执行前覆盖自动检测值：
+| 文件 | 用途 |
+| --- | --- |
+| `/etc/sing-box/config.json` | 当前安装模式的合并配置 |
+| `/etc/sing-box/config-reality.json` | Reality 独立服务配置 |
+| `/etc/sing-box/config-hysteria2.json` | Hysteria2 独立服务配置 |
+| `/etc/sing-box/clients/links.txt` | 节点导入链接 |
+| `/etc/sing-box/clients/reality.json` | Reality 客户端出站模板 |
+| `/etc/sing-box/clients/hysteria2.json` | Hysteria2 客户端出站模板 |
+| `/etc/sing-box/install-info.txt` | 安装信息和端口记录 |
+| `/etc/sing-box/state.env` | 状态查询使用的安装状态 |
+| `/etc/sing-box/server.crt` | Hysteria2 证书 |
+| `/etc/sing-box/server.key` | Hysteria2 私钥 |
+| `/usr/local/bin/singbox` | 全局快捷菜单命令 |
+| `/usr/local/lib/sing-box-lite/install-singbox-lite.sh` | 持久化管理脚本 |
 
-```sh
-PUBLIC_IP=203.0.113.10 NODE_REGION_CODE=HK NODE_REGION_EMOJI=🇭🇰 sudo -E ./install-singbox-lite.sh 443 8443
-```
+节点链接和私钥属于敏感信息，脚本会限制相关文件权限，请不要提交到公开仓库。
 
-通常不需要设置这些变量。
+## 防火墙和安全组
 
-## 节点链接格式
-
-脚本会将公网 IP 的地区信息用于生成节点名称。默认格式为：
+根据实际安装协议放行对应端口：
 
 ```text
-地区 Emoji地区缩写-Vless
-地区 Emoji地区缩写-Hy2
+Reality：TCP <Reality端口>
+Hysteria2：UDP <Hysteria2端口>
 ```
 
-例如香港服务器会生成类似下面的链接：
+脚本不会自动修改云厂商安全组规则，也不会自动开放服务器本机防火墙。
 
-```text
-vless://UUID@SERVER:443/?...#🇭🇰HK-Vless
-hysteria2://PASSWORD@SERVER:8443/?...#🇭🇰HK-Hy2
-```
+## 支持环境
 
-实际完整链接会保存在：
+脚本面向 Linux VPS，支持：
 
-```text
-/etc/sing-box/clients/links.txt
-```
+- Debian / Ubuntu / Linux Mint / Raspbian
+- Alpine Linux
+- Alibaba Cloud Linux / CentOS / RHEL 系
+- systemd 或 OpenRC
 
-安装成功时，脚本会自动把这两个链接直接打印到终端，不需要用户再手动执行 `cat`。
+基础依赖为 `openssl`、`tar` 和 `curl` 或 `wget`。脚本会优先使用系统包管理器安装 sing-box，失败时回退到 GitHub Releases。
 
-如果地区接口不可用，脚本会使用 `🌐XX` 作为兜底名称。也可以手动指定地区，避免自动识别：
+## 注意事项
 
-```sh
-NODE_REGION_CODE=HK NODE_REGION_EMOJI=🇭🇰 sudo -E ./install-singbox-lite.sh 443 8443
-```
+- 仅 Reality 不需要 Hysteria2 证书。
+- 自签名 Hysteria2 节点必须在客户端允许 `insecure=1`。
+- 重新安装会重新生成 UUID、Reality 密钥和 Hysteria2 密码，旧节点链接会失效；旧配置会先备份。
+- 域名证书申请前，域名解析必须指向当前服务器，验证端口必须可达。
+- IP 证书取决于当前 acme.sh 和 CA 对 IP 证书流程的支持；申请失败时请查看 acme.sh 输出。
+- 请只在你拥有或获授权管理的服务器上使用，并遵守所在地法律、云服务商条款和网络运营商政策。
 
-其中 `NODE_REGION_CODE` 建议使用两位地区缩写，例如 `HK`、`US`、`JP`、`SG`；`NODE_REGION_EMOJI` 使用对应的国旗或地区 Emoji。
-## 免责声明
-
-请只在你拥有或获授权管理的服务器上使用。使用前请确认所在地法律、云服务商条款和网络运营商政策。

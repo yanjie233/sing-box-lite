@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -f "$DIR/install-singbox-lite.sh" ]; then
+    exec sh "$DIR/install-singbox-lite.sh" "$@"
+fi
+if [ -x /usr/local/lib/sing-box-lite/install-singbox-lite.sh ]; then
+    exec sh /usr/local/lib/sing-box-lite/install-singbox-lite.sh "$@"
+fi
+printf '%s\n' '未找到 install-singbox-lite.sh，请将 singbox 放在安装脚本同目录。' >&2
+exit 1
