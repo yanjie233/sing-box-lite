@@ -33,7 +33,6 @@ CERT_EMAIL=""
 CERT_HTTP_PORT="$DEFAULT_ACME_HTTP_PORT"
 HY2_HOST=""
 PUBLIC_IP=""
-CONFIG_SCOPE="all"
 SING_BOX_PATH="/usr/local/bin/sing-box"
 
 log() { printf '[sing-box-lite] %s\n' "$*"; }
@@ -62,10 +61,9 @@ validate_port() {
 }
 
 is_protocol_enabled() {
-    case "${CONFIG_SCOPE:-all}:$1" in
-        reality:reality|hy2:hy2) return 0 ;;
-        all:reality) [ "$INSTALL_MODE" = both ] || [ "$INSTALL_MODE" = reality ] ;;
-        all:hy2) [ "$INSTALL_MODE" = both ] || [ "$INSTALL_MODE" = hy2 ] ;;
+    case "$1" in
+        reality) [ "$INSTALL_MODE" = both ] || [ "$INSTALL_MODE" = reality ] ;;
+        hy2) [ "$INSTALL_MODE" = both ] || [ "$INSTALL_MODE" = hy2 ] ;;
         *) return 1 ;;
     esac
 }
@@ -379,7 +377,12 @@ write_hy2_inbound() {
 EOF
 }
 write_config() {
-    destination="$1"
+    destination="$1"; force="${2:-all}"
+    case "$force" in
+        reality) if [ "$INSTALL_MODE" = both ] || [ "$INSTALL_MODE" = reality ]; then enable_reality=1; else enable_reality=0; fi; enable_hy2=0 ;;
+        hy2) enable_reality=0; if [ "$INSTALL_MODE" = both ] || [ "$INSTALL_MODE" = hy2 ]; then enable_hy2=1; else enable_hy2=0; fi ;;
+        all) if [ "$INSTALL_MODE" = both ] || [ "$INSTALL_MODE" = reality ]; then enable_reality=1; else enable_reality=0; fi; if [ "$INSTALL_MODE" = both ] || [ "$INSTALL_MODE" = hy2 ]; then enable_hy2=1; else enable_hy2=0; fi ;;
+    esac
     {
         cat <<EOF
 {
@@ -387,8 +390,8 @@ write_config() {
   "inbounds": [
 EOF
         first=1
-        if is_protocol_enabled reality; then write_reality_inbound; first=0; fi
-        if is_protocol_enabled hy2; then [ "$first" -eq 1 ] || printf ',\n'; write_hy2_inbound; fi
+        if [ "$enable_reality" -eq 1 ]; then write_reality_inbound; first=0; fi
+        if [ "$enable_hy2" -eq 1 ]; then [ "$first" -eq 1 ] || printf ',\n'; write_hy2_inbound; fi
         cat <<EOF
   ],
   "outbounds": [{"type": "direct", "tag": "direct"}],
@@ -601,8 +604,8 @@ prompt_install_options() {
 }
 prepare_install() {
     [ "$(id -u)" -eq 0 ] || die '安装请使用 root 运行。'
-    if is_protocol_enabled reality; then validate_port "$REALITY_PORT" 'Reality TCP 端口'; fi
-    if is_protocol_enabled hy2; then validate_port "$HY2_PORT" 'Hysteria2 UDP 端口'; fi
+    if is_protocol_enabled reality; then [ -n "$REALITY_PORT" ] || REALITY_PORT="$DEFAULT_REALITY_PORT"; validate_port "$REALITY_PORT" 'Reality TCP 端口'; fi
+    if is_protocol_enabled hy2; then [ -n "$HY2_PORT" ] || HY2_PORT="$DEFAULT_HY2_PORT"; validate_port "$HY2_PORT" 'Hysteria2 UDP 端口'; fi
     if is_protocol_enabled reality && is_protocol_enabled hy2 && [ "$REALITY_PORT" = "$HY2_PORT" ]; then die 'Reality TCP 和 Hysteria2 UDP 不能使用同一个端口。'; fi
     if [ "$CERT_MODE" = domain ]; then validate_domain "$CERT_DOMAIN" || die "证书域名格式无效：$CERT_DOMAIN"; fi
     install_base_packages; install_sing_box; SING_BOX="$(command -v sing-box)"; SING_BOX_PATH="$SING_BOX"
@@ -622,9 +625,8 @@ prepare_install() {
         if [ "$CERT_MODE" = self ]; then make_self_signed_cert; else issue_acme_certificate; fi
     fi
     write_config "$CONFIG_FILE"
-    if is_protocol_enabled reality; then CONFIG_SCOPE=reality; write_config "$REALITY_CONFIG_FILE"; else rm -f "$REALITY_CONFIG_FILE"; fi
-    if is_protocol_enabled hy2; then CONFIG_SCOPE=hy2; write_config "$HY2_CONFIG_FILE"; else rm -f "$HY2_CONFIG_FILE"; fi
-    CONFIG_SCOPE=all
+    if is_protocol_enabled reality; then write_config "$REALITY_CONFIG_FILE" reality; else rm -f "$REALITY_CONFIG_FILE"; fi
+    if is_protocol_enabled hy2; then write_config "$HY2_CONFIG_FILE" hy2; else rm -f "$HY2_CONFIG_FILE"; fi
     "$SING_BOX" check -c "$CONFIG_FILE" >/dev/null || die "配置校验失败：$CONFIG_FILE"
     if is_protocol_enabled reality; then "$SING_BOX" check -c "$REALITY_CONFIG_FILE" >/dev/null || die 'Reality 配置校验失败。'; fi
     if is_protocol_enabled hy2; then "$SING_BOX" check -c "$HY2_CONFIG_FILE" >/dev/null || die 'Hysteria2 配置校验失败。'; fi
@@ -646,7 +648,7 @@ show_menu() {
     while :; do
         clear_screen
         printf '\033[1;36m╔══════════════════════════════════════════════╗\033[0m\n'
-        printf '\033[1;36m║\033[0m       \033[1;32msing-box-lite\033[0m  \033[1;33mv%s\033[0m              \033[1;36m║\033[0m\n' "$SCRIPT_VERSION"
+        printf '\033[1;36m║\033[0m       \033[1;32msing-box-lite\033[0m  \033[1;33mv%s\033[0m                                 \033[1;36m║\033[0m\n' "$SCRIPT_VERSION"
         printf '\033[1;36m╠══════════════════════════════════════════════╣\033[0m\n'
         printf '\033[1;36m║\033[0m  1) 一键快捷安装（Reality + Hy2）          \033[1;36m║\033[0m\n'
         printf '\033[1;36m║\033[0m  2) 自定义安装（仅 Reality / 仅 Hy2）      \033[1;36m║\033[0m\n'
