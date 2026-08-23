@@ -7,7 +7,7 @@
 ```sh
 curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
 chmod +x install-singbox-lite.sh
-./install-singbox-lite.sh
+sudo ./install-singbox-lite.sh
 ```
 
 安装完成后，脚本会创建快捷菜单命令：
@@ -29,7 +29,7 @@ singbox
 2. 自定义安装         选择全部、仅 Reality 或仅 Hysteria2
 3. 状态查询及管理     分别查看、开启、关闭、重启两个协议
 4. 节点信息           查看导入链接和客户端配置文件
-5. 升级脚本、singbox  更新管理脚本和 sing-box 二进制
+5. 升级脚本与 singbox   更新管理脚本和 sing-box 二进制
 6. 完全卸载           删除服务、配置、证书、节点信息和快捷命令
 0. 退出
 ```

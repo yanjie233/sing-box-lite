@@ -277,7 +277,8 @@ install_sing_box() {
 upgrade_sing_box() {
     [ "$(id -u)" -eq 0 ] || die '升级 sing-box 请使用 root 运行。'
     install_base_packages; FORCE_SING_BOX_UPDATE=1 install_sing_box
-    service_action "$REALITY_SERVICE" restart || true; service_action "$HY2_SERVICE" restart || true
+    if is_protocol_enabled reality; then service_action "$REALITY_SERVICE" restart || true; fi
+    if is_protocol_enabled hy2; then service_action "$HY2_SERVICE" restart || true; fi
     log "sing-box 已更新：$(sing-box version | head -n 1)"
 }
 
@@ -514,37 +515,29 @@ HY2_HOST=$HY2_HOST
 HY2_SNI=$HY2_SNI
 EOF
     chmod 600 "$STATE_FILE"
-    cat > "$CONFIG_DIR/install-info.txt" <<EOF
-sing-box-lite 安装完成
-脚本版本: $SCRIPT_VERSION
-安装模式: $INSTALL_MODE
-服务器地址: $PUBLIC_IP
-Reality TCP 端口: $REALITY_PORT
-Hysteria2 UDP 端口: $HY2_PORT
-Reality SNI/握手站点: $REALITY_SNI
-Hysteria2 SNI: $HY2_SNI
-证书模式: $CERT_MODE
-证书验证端口: $CERT_HTTP_PORT
-服务管理: $SERVICE_STATUS
-
-配置文件:
-- $CONFIG_FILE
-- $REALITY_CONFIG_FILE
-- $HY2_CONFIG_FILE
-
-客户端文件:
-- $CLIENT_DIR/links.txt
-- $CLIENT_DIR/reality.json
-- $CLIENT_DIR/hysteria2.json
-
-防火墙/安全组:
-- Reality 需要 TCP $REALITY_PORT
-- Hysteria2 需要 UDP $HY2_PORT
-
-快捷菜单:
-- 命令: singbox
-- 文件: $SHORTCUT_PATH
-EOF
+    {
+        printf '%s\n' 'sing-box-lite 安装完成'
+        printf '脚本版本: %s\n' "$SCRIPT_VERSION"
+        printf '安装模式: %s\n' "$INSTALL_MODE"
+        printf '服务器地址: %s\n' "$PUBLIC_IP"
+        if is_protocol_enabled reality; then printf 'Reality TCP 端口: %s\n' "$REALITY_PORT"; fi
+        if is_protocol_enabled hy2; then printf 'Hysteria2 UDP 端口: %s\n' "$HY2_PORT"; fi
+        printf 'Reality SNI/握手站点: %s\n' "$REALITY_SNI"
+        if is_protocol_enabled hy2; then printf 'Hysteria2 SNI: %s\n' "$HY2_SNI"; fi
+        printf '证书模式: %s\n' "$CERT_MODE"
+        if [ "$CERT_MODE" != self ]; then printf '证书验证端口: %s\n' "$CERT_HTTP_PORT"; fi
+        printf '服务管理: %s\n' "$SERVICE_STATUS"
+        printf '\n配置文件:\n'
+        if is_protocol_enabled reality; then printf -- '- %s\n' "$REALITY_CONFIG_FILE"; fi
+        if is_protocol_enabled hy2; then printf -- '- %s\n' "$HY2_CONFIG_FILE"; fi
+        printf '\n客户端文件:\n- %s\n' "$CLIENT_DIR/links.txt"
+        if is_protocol_enabled reality; then printf -- '- %s\n' "$CLIENT_DIR/reality.json"; fi
+        if is_protocol_enabled hy2; then printf -- '- %s\n' "$CLIENT_DIR/hysteria2.json"; fi
+        printf '\n防火墙/安全组:\n'
+        if is_protocol_enabled reality; then printf -- '- Reality 需要 TCP %s\n' "$REALITY_PORT"; fi
+        if is_protocol_enabled hy2; then printf -- '- Hysteria2 需要 UDP %s\n' "$HY2_PORT"; fi
+        printf '\n快捷菜单:\n- 命令: singbox\n- 文件: %s\n' "$SHORTCUT_PATH"
+    } > "$CONFIG_DIR/install-info.txt"
     chmod 600 "$CONFIG_DIR/install-info.txt"
 }
 install_shortcut() {
@@ -571,6 +564,7 @@ upgrade_script() {
     download_file "$REMOTE_SCRIPT_URL" "$tmp_update" || { rm -f "$tmp_update"; die '无法下载最新脚本。'; }
     remote_version="$(sed -n 's/^SCRIPT_VERSION="\([0-9][0-9.]*\)".*/\1/p' "$tmp_update" | head -n 1)"
     [ -n "$remote_version" ] || { rm -f "$tmp_update"; die '远程脚本版本无效。'; }
+    if [ "$remote_version" = "$SCRIPT_VERSION" ]; then rm -f "$tmp_update"; log "脚本已是最新版本 $SCRIPT_VERSION。"; return 0; fi
     if [ -f "$SCRIPT_INSTALL_PATH" ]; then cp -p "$SCRIPT_INSTALL_PATH" "$SCRIPT_INSTALL_PATH.bak.$SCRIPT_VERSION"; fi
     mkdir -p "$SCRIPT_INSTALL_DIR"; cp "$tmp_update" "$SCRIPT_INSTALL_PATH"; chmod 755 "$SCRIPT_INSTALL_PATH"; rm -f "$tmp_update"
     cat > "$SHORTCUT_PATH" <<'EOF'
@@ -580,26 +574,10 @@ EOF
     chmod 755 "$SHORTCUT_PATH"
     log "脚本已更新到版本 $remote_version。快捷命令：singbox"
 }
-version_gt() {
-    awk -v a="$1" -v b="$2" 'function p(v,n,x){split(v,x,".");return x[n]+0} BEGIN{for(i=1;i<=3;i++){ai=p(a,i);bi=p(b,i);if(ai>bi)exit 0;if(ai<bi)exit 1}exit 1}'
-}
-self_update() {
-    [ "${SINGBOX_LITE_SKIP_UPDATE:-0}" = 1 ] && return 0
-    case "$0" in /dev/*|/proc/*|/sys/*) return 0 ;; esac
-    [ -f "$0" ] && [ -w "$0" ] || return 0
-    tmp_update="$(mktemp)"
-    download_file "$REMOTE_SCRIPT_URL" "$tmp_update" || { rm -f "$tmp_update"; warn '无法检查最新脚本，继续当前版本。'; return 0; }
-    remote_version="$(sed -n 's/^SCRIPT_VERSION="\([0-9][0-9.]*\)".*/\1/p' "$tmp_update" | head -n 1)"
-    if [ -n "$remote_version" ] && version_gt "$remote_version" "$SCRIPT_VERSION"; then
-        cp -p "$0" "$0.bak.$SCRIPT_VERSION"; cp "$tmp_update" "$0"; chmod +x "$0"; rm -f "$tmp_update"
-        export SINGBOX_LITE_SKIP_UPDATE=1; exec sh "$0" install "$@"
-    fi
-    rm -f "$tmp_update"
-}
 prompt_port() {
     label="$1"; default="$2"; current="$3"
     if [ -n "$current" ]; then printf '%s：%s\n' "$label" "$current" >&2; printf '%s' "$current"; return; fi
-    printf '%s（默认 %s）：' "$label" "$default" >&2; read -r value || value=''; [ -n "$value" ] || value="$default"; printf '%s' "$value"
+    printf '%s（回车使用默认 %s）：' "$label" "$default" >&2; read -r value || value=''; [ -n "$value" ] || value="$default"; printf '%s' "$value"
 }
 prompt_install_options() {
     printf '\n安装协议：\n  1) Reality + Hysteria2（推荐）\n  2) 仅 Reality\n  3) 仅 Hysteria2\n请选择：'
@@ -611,7 +589,7 @@ prompt_install_options() {
     else REALITY_PORT=''; fi
     if is_protocol_enabled hy2; then
         HY2_PORT="$(prompt_port 'Hysteria2 UDP 端口' "$DEFAULT_HY2_PORT" "$HY2_PORT")"
-        printf '\nHysteria2 证书：\n  1) 自签名证书（无需域名）\n  2) 自动申请域名证书\n  3) 自动申请 IP 证书\n请选择（默认 1）：'
+        printf '\nHysteria2 证书：\n  1) 自签名证书（无需域名）\n  2) 自动申请域名证书\n  3) 自动申请 IP 证书\n请选择（回车使用默认 1）：'
         read -r cert_choice || cert_choice=1
         case "$cert_choice" in
             1|'') CERT_MODE=self ;;
@@ -643,9 +621,9 @@ prepare_install() {
         HY2_PASSWORD="$(openssl rand -hex 24)"
         if [ "$CERT_MODE" = self ]; then make_self_signed_cert; else issue_acme_certificate; fi
     fi
-    CONFIG_SCOPE=all; write_config "$CONFIG_FILE"
-    CONFIG_SCOPE=all; if is_protocol_enabled reality; then CONFIG_SCOPE=reality; write_config "$REALITY_CONFIG_FILE"; else rm -f "$REALITY_CONFIG_FILE"; fi
-    CONFIG_SCOPE=all; if is_protocol_enabled hy2; then CONFIG_SCOPE=hy2; write_config "$HY2_CONFIG_FILE"; else rm -f "$HY2_CONFIG_FILE"; fi
+    write_config "$CONFIG_FILE"
+    if is_protocol_enabled reality; then CONFIG_SCOPE=reality; write_config "$REALITY_CONFIG_FILE"; else rm -f "$REALITY_CONFIG_FILE"; fi
+    if is_protocol_enabled hy2; then CONFIG_SCOPE=hy2; write_config "$HY2_CONFIG_FILE"; else rm -f "$HY2_CONFIG_FILE"; fi
     CONFIG_SCOPE=all
     "$SING_BOX" check -c "$CONFIG_FILE" >/dev/null || die "配置校验失败：$CONFIG_FILE"
     if is_protocol_enabled reality; then "$SING_BOX" check -c "$REALITY_CONFIG_FILE" >/dev/null || die 'Reality 配置校验失败。'; fi
@@ -655,9 +633,15 @@ prepare_install() {
     view_nodes
     printf '\n\033[1;32m安装完成\033[0m\n'
     log '快捷菜单：singbox（或 ./singbox）'
-    log "请放行 Reality TCP $REALITY_PORT 和 Hysteria2 UDP $HY2_PORT（未安装协议可忽略）。"
+    firewall_hint=''
+    if is_protocol_enabled reality; then firewall_hint="放行 Reality TCP $REALITY_PORT"; fi
+    if is_protocol_enabled hy2; then
+        [ -n "$firewall_hint" ] && firewall_hint="$firewall_hint，"
+        firewall_hint="${firewall_hint}放行 Hysteria2 UDP $HY2_PORT"
+    fi
+    [ -n "$firewall_hint" ] && log "请$firewall_hint。"
 }
-upgrade_all() { upgrade_script; upgrade_sing_box; }
+upgrade_all() { upgrade_sing_box; upgrade_script; }
 show_menu() {
     while :; do
         clear_screen
@@ -668,7 +652,7 @@ show_menu() {
         printf '\033[1;36m║\033[0m  2) 自定义安装（仅 Reality / 仅 Hy2）      \033[1;36m║\033[0m\n'
         printf '\033[1;36m║\033[0m  3) 状态查询及管理                         \033[1;36m║\033[0m\n'
         printf '\033[1;36m║\033[0m  4) 节点信息                               \033[1;36m║\033[0m\n'
-        printf '\033[1;36m║\033[0m  5) 升级脚本、singbox                     \033[1;36m║\033[0m\n'
+        printf '\033[1;36m║\033[0m  5) 升级脚本与 singbox                     \033[1;36m║\033[0m\n'
         printf '\033[1;36m║\033[0m  6) 完全卸载                               \033[1;36m║\033[0m\n'
         printf '\033[1;36m║\033[0m  0) 退出                                   \033[1;36m║\033[0m\n'
         printf '\033[1;36m╚══════════════════════════════════════════════╝\033[0m\n'
@@ -705,12 +689,17 @@ case "${1:-}" in
             '') INSTALL_MODE=both ;;
             *[!0-9]*) die '用法：install [both|reality|hy2] [Reality端口] [Hy2端口]' ;;
         esac
-        case "$INSTALL_MODE" in
-            both) REALITY_PORT="${1:-}"; HY2_PORT="${2:-}" ;;
-            reality) REALITY_PORT="${1:-}"; HY2_PORT="" ;;
-            hy2) REALITY_PORT=""; HY2_PORT="${1:-}" ;;
-        esac
-        prepare_install "$@" ;;
+        if [ "$INSTALL_MODE" = reality ]; then
+            [ $# -gt 1 ] && die '仅安装 Reality 只需一个端口：install reality <Reality端口>'
+            REALITY_PORT="${1:-}"; HY2_PORT=''
+        elif [ "$INSTALL_MODE" = hy2 ]; then
+            [ $# -gt 1 ] && die '仅安装 Hysteria2 只需一个端口：install hy2 <Hy2端口>'
+            REALITY_PORT=''; HY2_PORT="${1:-}"
+        else
+            REALITY_PORT="${1:-}"; HY2_PORT="${2:-}"
+            [ $# -gt 2 ] && die 'install both 最多接受两个端口：install both <Reality端口> <Hy2端口>'
+        fi
+        prepare_install ;;
     uninstall|remove) uninstall_singbox ;;
     nodes|node|view|show) view_nodes ;;
     status|state|check) show_status ;;
@@ -718,6 +707,6 @@ case "${1:-}" in
     upgrade|update) upgrade_all ;;
     '') show_menu ;;
     *[!0-9]*) die "用法：$0 [install [both|reality|hy2] [Reality端口] [Hy2端口] | status | manage | nodes | upgrade | uninstall]" ;;
-    *) INSTALL_MODE=both; REALITY_PORT="$1"; HY2_PORT="${2:-}"; prepare_install "$@" ;;
+    *) INSTALL_MODE=both; REALITY_PORT="$1"; HY2_PORT="${2:-}"; prepare_install ;;
 esac
 
