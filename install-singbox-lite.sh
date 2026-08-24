@@ -25,6 +25,8 @@ DEFAULT_REALITY_PORT="55667"
 DEFAULT_HY2_PORT="55668"
 DEFAULT_ACME_HTTP_PORT="80"
 INSTALL_MODE="both"
+LISTEN_IPV6="0"
+V6_ONLY="0"
 REALITY_PORT=""
 HY2_PORT=""
 CERT_MODE="self"
@@ -113,8 +115,12 @@ show_status_summary() {
     [ "$(id -u)" -eq 0 ] || die '查询状态请使用 root 运行。'
     mode="$(read_state_value INSTALL_MODE)"; [ -n "$mode" ] || mode="$INSTALL_MODE"
     reality_port="$(read_state_value REALITY_PORT)"; hy2_port="$(read_state_value HY2_PORT)"
+    listen_v6="$(read_state_value LISTEN_IPV6)"; v6only="$(read_state_value V6_ONLY)"
     printf '\n\033[1;36m┌────────────── sing-box-lite 状态 ──────────────┐\033[0m\n'
     printf '  安装模式：%s\n' "$mode"
+    if [ "$v6only" = 1 ]; then printf '  网络：IPv6-only\n'
+    elif [ "$listen_v6" = 1 ]; then printf '  网络：双栈（监听 IPv6）\n'
+    fi
     printf '\033[1;36m├─────────────────────────────────────────────────┤\033[0m\n'
     print_status_row 'VLESS Reality' "$REALITY_SERVICE" "$reality_port" TCP
     print_status_row 'Hysteria2' "$HY2_SERVICE" "$hy2_port" UDP
@@ -280,27 +286,127 @@ upgrade_sing_box() {
     log "sing-box 已更新：$(sing-box version | head -n 1)"
 }
 
-get_public_ip() {
-    ip=''
-    if have curl; then
-        ip="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
-        [ -n "$ip" ] || ip="$(curl -4fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null || true)"
-    elif have wget; then
-        ip="$(wget -qO- --timeout=5 https://api.ipify.org 2>/dev/null || true)"
-        [ -n "$ip" ] || ip="$(wget -qO- --timeout=5 https://ifconfig.me/ip 2>/dev/null || true)"
+get_local_ipv4() {
+    # 本机网络接口上用于访问公网的 IPv4 地址（无则空，可能是 WARP/NAT 环境）
+    local_ip=''
+    if have ip; then
+        local_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
     fi
-    if [ -z "$ip" ] && have ip; then ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"; fi
-    if [ -z "$ip" ] && have hostname; then ip="$(hostname -I 2>/dev/null | awk '{print $1}')"; fi
-    printf '%s' "$ip"
+    if [ -z "$local_ip" ] && have hostname; then local_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"; fi
+    printf '%s' "$local_ip"
+}
+is_private_ipv4() {
+    ip="$1"
+    case "$ip" in
+        0.*|10.*|127.*|169.254.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|192.168.*|100.6[4-9].*|100.7[0-9].*|100.8[0-9].*|100.9[0-9].*|100.1[01][0-9].*|100.12[0-7].*|192.0.0.*|198.18.*|198.19.*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+has_native_ipv4() {
+    # 本机是否拥有属于自己的公网 IPv4（可在该地址上监听）
+    v4="$(get_local_ipv4)"
+    [ -n "$v4" ] || return 1
+    is_private_ipv4 "$v4" && return 1
+    return 0
+}
+get_external_ipv4() {
+    # 外部可见的 IPv4 出口（可能是本机公网 IP、NAT 端口转发入口，或 WARP 共享出口）
+    ext=''
+    if have curl; then
+        ext="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+        [ -n "$ext" ] || ext="$(curl -4fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null || true)"
+    elif have wget; then
+        ext="$(wget -qO- --timeout=5 https://api.ipify.org 2>/dev/null || true)"
+        [ -n "$ext" ] || ext="$(wget -qO- --timeout=5 https://ifconfig.me/ip 2>/dev/null || true)"
+    fi
+    printf '%s' "$ext"
+}
+is_warp_v4_egress() {
+    # 判断是否存在 WARP 风格的 v4 出口：本机无公网 IPv4，但 curl -4 有出口
+    has_native_ipv4 && return 1
+    [ -n "$(get_external_ipv4)" ] || return 1
+    # 有 WireGuard 接口（wgcf/wg*）进一步佐证是 WARP
+    if have wg && wg show interfaces 2>/dev/null | grep -qE 'wgcf|wg[0-9]+'; then return 0; fi
+    # 没有 wg 佐证时也算“非本机 v4 出口”（可能 WARP 或无公网 v4 的 NAT）
+    return 0
+}
+get_public_ip() {
+    # v6-only：只用本机公网 IPv6，绝不用 v4 出口（WARP 共享 IP 无法监听）
+    if [ "$V6_ONLY" = 1 ]; then
+        ip6="$(get_public_ipv6)"; [ -n "$ip6" ] && { printf '%s' "$ip6"; return; }
+        [ -n "${PUBLIC_IP:-}" ] && { printf '%s' "$PUBLIC_IP"; return; }
+        printf '%s' ''; return
+    fi
+    # 双栈/仅 v4：优先本机公网 IPv4，其次外部可见 IPv4 出口（NAT 端口转发兜底）
+    v4="$(get_local_ipv4)"
+    if [ -n "$v4" ] && ! is_private_ipv4 "$v4"; then printf '%s' "$v4"; return; fi
+    printf '%s' "$(get_external_ipv4)"
+}
+prompt_ipv6_options() {
+    # 检测本机 IPv6 支持，并询问监听/纯 v6-only
+    detect_ipv6_support
+    if [ "$HAS_IPV6" = 1 ]; then
+        # 关键判断：即使有 IPv4 出口（WARP/NAT），只要本机没有属于自己的公网 IPv4 就无法监听
+        if ! has_native_ipv4; then
+            printf '\n检测到本机有 IPv6，但本机没有可直接监听的公网 IPv4（可能使用 WARP/出口转发）。\n将按 IPv6-only 处理，监听 IPv6 并生成 IPv6 节点。\n'
+            V6_ONLY=1; LISTEN_IPV6=1
+            is_warp_v4_egress && warn '检测到 WARP 风格的 IPv4 出口：节点只走 IPv6，客户端请勿使用该 v4 出口地址。'
+            return 0
+        fi
+        printf '\n检测到本机有 IPv6 地址。\n是否同时监听 IPv6（双栈，推荐）？\n  1) 是（监听 IPv4 + IPv6）\n  2) 否（仅监听 IPv4）\n请选择（回车默认 1）：'
+        read -r listen_choice || listen_choice=1
+        case "$listen_choice" in
+            1|'') LISTEN_IPV6=1 ;;
+            2) LISTEN_IPV6=0 ;;
+            *) die '无效选项。' ;;
+        esac
+    else
+        printf '\n未检测到本机 IPv6 地址。\n你的机器是否为“仅有 IPv6”（无公网 IPv4）？\n  1) 是 2) 否\n请选择（回车默认 2）：'
+        read -r v6only_choice || v6only_choice=2
+        case "$v6only_choice" in
+            1) V6_ONLY=1; LISTEN_IPV6=1 ;;
+            2|'') V6_ONLY=0; LISTEN_IPV6=0 ;;
+            *) die '无效选项。' ;;
+        esac
+    fi
+    if [ "$V6_ONLY" = 1 ]; then log '识别为 IPv6-only 机器，将监听 IPv6 并生成 IPv6 节点。'; fi
 }
 get_node_region() {
     geo=''
     if have curl && { [ -z "$NODE_REGION_CODE" ] || [ -z "$NODE_REGION_EMOJI" ]; }; then
-        geo="$(curl -4fsS --max-time 5 "https://ipwho.is/${PUBLIC_IP}?fields=country_code,flag" 2>/dev/null || true)"
+        ip_ver='-4'; [ "$V6_ONLY" = 1 ] && ip_ver='-6'
+        geo="$(curl ${ip_ver}fsS --max-time 5 "https://ipwho.is/${PUBLIC_IP}?fields=country_code,flag" 2>/dev/null || true)"
         [ -n "$NODE_REGION_CODE" ] || NODE_REGION_CODE="$(printf '%s' "$geo" | sed -n 's/.*"country_code"[[:space:]]*:[[:space:]]*"\([A-Za-z][A-Za-z]\)".*/\1/p' | head -n 1 | tr '[:lower:]' '[:upper:]')"
         [ -n "$NODE_REGION_EMOJI" ] || NODE_REGION_EMOJI="$(printf '%s' "$geo" | sed -n 's/.*"emoji"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
     fi
     [ -n "$NODE_REGION_CODE" ] || NODE_REGION_CODE=XX; [ -n "$NODE_REGION_EMOJI" ] || NODE_REGION_EMOJI='🌐'
+}
+detect_ipv6_support() {
+    # 检测本机是否存在全局（非链路本地）IPv6 地址
+    if have ip; then
+        ip -6 addr show scope global 2>/dev/null | grep -q 'inet6' && { HAS_IPV6=1; return 0; }
+    fi
+    if [ -d /proc/net/if_inet6 ]; then
+        # 过滤 fe80:: 链路本地
+        awk '{ if ($1 !~ /^fe80/) found=1 } END { exit found ? 0 : 1 }' /proc/net/if_inet6 2>/dev/null && { HAS_IPV6=1; return 0; }
+    fi
+    HAS_IPV6=0
+}
+get_public_ipv6() {
+    # 尝试获取公网 IPv6（仅取全局地址）
+    ip6=''
+    if have ip; then
+        ip6="$(ip -6 addr show scope global 2>/dev/null | grep -oE 'inet6 [0-9a-fA-F:]+' | head -n 1 | cut -d' ' -f2)"
+    fi
+    if [ -z "$ip6" ] && [ -r /proc/net/if_inet6 ]; then
+        # 按 if_inet6 拼接，跳过 fe80::
+        iface_line="$(awk '$1 !~ /^fe80/ {print; exit}' /proc/net/if_inet6 2>/dev/null)"
+        if [ -n "$iface_line" ]; then
+            hex="$(printf '%s\n' "$iface_line" | awk '{print $1}')"
+            ip6="$(printf '%s' "$hex" | sed 's/.\{4\}/&:/g; s/:$//')"
+        fi
+    fi
+    printf '%s' "$ip6"
 }
 make_uuid() {
     if [ -r /proc/sys/kernel/random/uuid ]; then cat /proc/sys/kernel/random/uuid; return; fi
@@ -331,13 +437,16 @@ issue_acme_certificate() {
     log "申请 $CERT_MODE 证书，验证端口：$CERT_HTTP_PORT"
     if [ "$CERT_MODE" = domain ]; then
         validate_domain "$CERT_DOMAIN" || die "证书域名格式无效：$CERT_DOMAIN"
+        listen_v6_flag=''
+        [ "$V6_ONLY" = 1 ] && listen_v6_flag='--listen-v6'
         "$acme" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
-        "$acme" --issue --standalone -d "$CERT_DOMAIN" --httpport "$CERT_HTTP_PORT" || die '域名证书申请失败。请确认域名解析、验证端口可达且无其他程序占用。'
+        "$acme" --issue --standalone -d "$CERT_DOMAIN" --httpport "$CERT_HTTP_PORT" $listen_v6_flag || die '域名证书申请失败。请确认域名解析、验证端口可达且无其他程序占用。'
         "$acme" --install-cert -d "$CERT_DOMAIN" --fullchain-file "$CERT_FILE" --key-file "$KEY_FILE" || die '域名证书部署失败。'
         HY2_SNI="$CERT_DOMAIN"; HY2_HOST="$CERT_DOMAIN"
     else
+        ip_flag='--ip'; [ "$V6_ONLY" = 1 ] && ip_flag='--ipv6 --ip'
         "$acme" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
-        "$acme" --issue --standalone --ip "$PUBLIC_IP" --httpport "$CERT_HTTP_PORT" || die 'IP 证书申请失败。请确认当前 acme.sh/CA 支持 IP 证书，且公网 IP 与验证端口可达。'
+        "$acme" --issue --standalone $ip_flag "$PUBLIC_IP" --httpport "$CERT_HTTP_PORT" || die 'IP 证书申请失败。请确认当前 acme.sh/CA 支持 IP 证书，且公网 IP 与验证端口可达。'
         "$acme" --install-cert -d "$PUBLIC_IP" --fullchain-file "$CERT_FILE" --key-file "$KEY_FILE" || die 'IP 证书部署失败。'
         HY2_SNI="$PUBLIC_IP"; HY2_HOST="$PUBLIC_IP"
     fi
@@ -349,12 +458,15 @@ backup_file() {
     backup="$file.bak.$(date +%Y%m%d-%H%M%S)"; cp -p "$file" "$backup"; warn "已备份旧文件：$backup"
 }
 
+get_listen_addr() {
+    if [ "$V6_ONLY" = 1 ] || [ "$LISTEN_IPV6" = 1 ]; then printf '%s' '::'; else printf '%s' '0.0.0.0'; fi
+}
 write_reality_inbound() {
     cat <<EOF
     {
       "type": "vless",
       "tag": "reality-in",
-      "listen": "0.0.0.0",
+      "listen": "$(get_listen_addr)",
       "listen_port": $REALITY_PORT,
       "users": [{"uuid": "$UUID", "flow": "xtls-rprx-vision"}],
       "tls": {"enabled": true, "server_name": "$REALITY_SNI", "reality": {
@@ -369,7 +481,7 @@ write_hy2_inbound() {
     {
       "type": "hysteria2",
       "tag": "hysteria2-in",
-      "listen": "0.0.0.0",
+      "listen": "$(get_listen_addr)",
       "listen_port": $HY2_PORT,
       "users": [{"name": "default", "password": "$HY2_PASSWORD"}],
       "tls": {"enabled": true, "server_name": "$HY2_SNI", "certificate_path": "$CERT_FILE", "key_path": "$KEY_FILE"}
@@ -403,6 +515,7 @@ EOF
 }
 write_client_files() {
     URL_HOST="$PUBLIC_IP"; case "$PUBLIC_IP" in *:*) URL_HOST="[$PUBLIC_IP]" ;; esac
+    HOST_ADDR="$HY2_HOST"; case "$HOST_ADDR" in *:*) HOST_ADDR="[$HOST_ADDR]" ;; esac
     rm -f "$CLIENT_DIR/reality.json" "$CLIENT_DIR/hysteria2.json" "$CLIENT_DIR/links.txt"
     : > "$CLIENT_DIR/links.txt"
     node_name="${NODE_REGION_EMOJI}${NODE_REGION_CODE}"
@@ -423,10 +536,10 @@ EOF
         cat > "$CLIENT_DIR/hysteria2.json" <<EOF
 {
   "log": {"level": "warn"},
-  "outbounds": [{"type": "hysteria2", "tag": "proxy", "server": "$HY2_HOST", "server_port": $HY2_PORT, "password": "$HY2_PASSWORD", "tls": {"enabled": true, "server_name": "$HY2_SNI", "insecure": $insecure}}]
+  "outbounds": [{"type": "hysteria2", "tag": "proxy", "server": "$HOST_ADDR", "server_port": $HY2_PORT, "password": "$HY2_PASSWORD", "tls": {"enabled": true, "server_name": "$HY2_SNI", "insecure": $insecure}}]
 }
 EOF
-        HY2_LINK="hysteria2://${HY2_PASSWORD}@${HY2_HOST}:${HY2_PORT}/?${query}#${node_name}-Hy2"
+        HY2_LINK="hysteria2://${HY2_PASSWORD}@${HOST_ADDR}:${HY2_PORT}/?${query}#${node_name}-Hy2"
         printf '# %s-Hy2（%s）\n%s\n' "$node_name" "$note" "$HY2_LINK" >> "$CLIENT_DIR/links.txt"
         chmod 600 "$CLIENT_DIR/hysteria2.json"
     fi
@@ -516,6 +629,8 @@ CERT_HTTP_PORT=$CERT_HTTP_PORT
 PUBLIC_IP=$PUBLIC_IP
 HY2_HOST=$HY2_HOST
 HY2_SNI=$HY2_SNI
+LISTEN_IPV6=$LISTEN_IPV6
+V6_ONLY=$V6_ONLY
 EOF
     chmod 600 "$STATE_FILE"
     {
@@ -523,6 +638,9 @@ EOF
         printf '脚本版本: %s\n' "$SCRIPT_VERSION"
         printf '安装模式: %s\n' "$INSTALL_MODE"
         printf '服务器地址: %s\n' "$PUBLIC_IP"
+        if [ "$V6_ONLY" = 1 ]; then printf '网络类型: IPv6-only\n'; else
+            if [ "$LISTEN_IPV6" = 1 ]; then printf '网络类型: 双栈（IPv4 + IPv6）\n'; else printf '网络类型: IPv4\n'; fi
+        fi
         if is_protocol_enabled reality; then printf 'Reality TCP 端口: %s\n' "$REALITY_PORT"; fi
         if is_protocol_enabled hy2; then printf 'Hysteria2 UDP 端口: %s\n' "$HY2_PORT"; fi
         printf 'Reality SNI/握手站点: %s\n' "$REALITY_SNI"
@@ -609,7 +727,15 @@ prepare_install() {
     if is_protocol_enabled reality && is_protocol_enabled hy2 && [ "$REALITY_PORT" = "$HY2_PORT" ]; then die 'Reality TCP 和 Hysteria2 UDP 不能使用同一个端口。'; fi
     if [ "$CERT_MODE" = domain ]; then validate_domain "$CERT_DOMAIN" || die "证书域名格式无效：$CERT_DOMAIN"; fi
     install_base_packages; install_sing_box; SING_BOX="$(command -v sing-box)"; SING_BOX_PATH="$SING_BOX"
-    PUBLIC_IP="${PUBLIC_IP:-$(get_public_ip)}"; [ -n "$PUBLIC_IP" ] || die '无法获取公网 IPv4，请设置 PUBLIC_IP 后重试。'
+    # 处理 IPv6：检测本机 IPv6、询问是否监听、识别是否 v6-only
+    prompt_ipv6_options
+    PUBLIC_IP="${PUBLIC_IP:-$(get_public_ip)}"
+    if [ -z "$PUBLIC_IP" ]; then
+        if [ "$V6_ONLY" = 1 ]; then
+            die '无法获取公网 IPv6。v6-only 机器请先设置环境变量 PUBLIC_IP=<你的公网IPv6> 再运行。'
+        fi
+        die '无法获取公网 IP，请设置 PUBLIC_IP 后重试。'
+    fi
     get_node_region; HY2_HOST="$PUBLIC_IP"
     mkdir -p "$CONFIG_DIR" "$CLIENT_DIR" /var/lib/sing-box; chmod 700 "$CONFIG_DIR" "$CLIENT_DIR"
     backup_file "$CONFIG_FILE"; backup_file "$REALITY_CONFIG_FILE"; backup_file "$HY2_CONFIG_FILE"
