@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: VLESS-Reality + Hysteria2 one-click installer and manager
-SCRIPT_VERSION="3.0.0"
+SCRIPT_VERSION="3.1.0"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 set -eu
 CONFIG_DIR="/etc/sing-box"
