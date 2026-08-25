@@ -16,12 +16,6 @@ chmod +x install-singbox-lite.sh
 singbox
 ```
 
-如果源码文件和 `singbox` 在同一目录，也可以直接运行：
-
-```sh
-./singbox
-```
-
 ## 菜单功能
 
 ```text
@@ -67,44 +61,6 @@ singbox
 
 验证端口必须能从公网访问；如果前面有端口转发，请把公网验证端口转发到脚本设置的本地端口。证书申请失败时脚本会停止，不会用不完整证书启动 Hysteria2。
 
-## 命令行用法
-
-```sh
-# 打开菜单
-sudo ./install-singbox-lite.sh
-sudo ./singbox
-
-# 安装全部协议，兼容旧用法
-sudo ./install-singbox-lite.sh install 443 8443
-
-# 显式安装全部协议
-sudo ./install-singbox-lite.sh install both 443 8443
-
-# 只安装 Reality
-sudo ./install-singbox-lite.sh install reality 443
-
-# 只安装 Hysteria2
-sudo ./install-singbox-lite.sh install hy2 8443
-
-# 查询两个协议状态
-sudo ./install-singbox-lite.sh status
-
-# 进入独立协议管理菜单
-sudo ./install-singbox-lite.sh manage
-
-# 查看节点链接
-sudo ./install-singbox-lite.sh nodes
-
-# 升级脚本和 sing-box
-sudo ./install-singbox-lite.sh upgrade
-
-# 完全卸载
-sudo ./install-singbox-lite.sh uninstall
-
-# 查看脚本版本
-./install-singbox-lite.sh --version
-```
-
 ## 服务管理
 
 菜单中的“状态查询及管理”会显示：
@@ -143,15 +99,17 @@ sudo ./install-singbox-lite.sh uninstall
 
 节点链接和私钥属于敏感信息，脚本会限制相关文件权限，请不要提交到公开仓库。
 
-## IPv6 支持
+## 地址选择
 
-安装时会自动检测本机 IPv6：
+安装时脚本会过滤内网和保留地址（包括 LXD 常见的 `fd00::/8`、`fc00::/7`），只使用可路由地址生成节点：
 
-- 检测到 IPv6：询问是否同时监听 IPv6（双栈），选择后自动监听 `::`。
-- 未检测到 IPv6：询问是否为“仅有 IPv6”的 v6-only 机器；若是，则监听 IPv6 并生成 IPv6 节点链接（`[IPv6]` 括号格式）。
-- v6-only 机器获取不到公网 IPv4 时，脚本会回退使用公网 IPv6 生成链接。
-- 若本机没有属于自己的公网 IPv4（如仅靠 WARP 获得 IPv4 出口），脚本会识别为 v6-only、只监听并生成 IPv6 节点，不会错误地把 WARP 共享出口地址写进节点。
-- IP 证书 / 域名证书在 v6-only 下会自动附加 acme.sh 的 `--ipv6` / `--listen-v6` 参数。
+- 同时检测到可用 IPv4 和公网 IPv6：询问节点使用 IPv4 还是 IPv6。
+- 只有公网 IPv6：自动按 IPv6-only 处理，监听 IPv6 并生成 `[IPv6]` 格式链接。
+- 只有 IPv4：使用 IPv4。
+- IPv4 只是 WARP、NAT 或 LXD 共享出口时，选择 IPv4 需要自行确认端口转发；否则请选择 IPv6。
+- 如果自动检测不准确，可运行前设置 `PUBLIC_IP=公网地址` 覆盖检测结果。
+
+IPv6 证书申请会自动使用对应的 IPv6 参数。
 
 ## 防火墙和安全组
 
@@ -174,33 +132,3 @@ Hysteria2：UDP <Hysteria2端口>
 - systemd 或 OpenRC
 
 基础依赖为 `openssl`、`tar` 和 `curl` 或 `wget`。脚本会优先使用系统包管理器安装 sing-box，失败时回退到 GitHub Releases。
-
-## 注意事项
-
-- 仅 Reality 不需要 Hysteria2 证书。
-- 自签名 Hysteria2 节点必须在客户端允许 `insecure=1`。
-- 重新安装会重新生成 UUID、Reality 密钥和 Hysteria2 密码，旧节点链接会失效；旧配置会先备份。
-- 域名证书申请前，域名解析必须指向当前服务器，验证端口必须可达。
-- IP 证书取决于当前 acme.sh 和 CA 对 IP 证书流程的支持；申请失败时请查看 acme.sh 输出。
-- 请只在你拥有或获授权管理的服务器上使用，并遵守所在地法律、云服务商条款和网络运营商政策。
-
-
-## 故障排查：`./install-singbox-lite.sh: not found`
-
-如果 Alpine、Debian 等 Linux 服务器执行脚本时出现 `not found`，但文件确实存在，通常是脚本首行包含 Windows 换行符（`CRLF`），导致系统把解释器识别成 `/bin/sh^M`。请先转换为 Linux 换行符，再执行：
-
-```sh
-sed -i 's/\r$//' install-singbox-lite.sh
-chmod 755 install-singbox-lite.sh
-/bin/sh ./install-singbox-lite.sh
-```
-
-重新下载时请确保 URL 在同一行，并使用：
-
-```sh
-curl -fsSL 'https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh' \
-  -o install-singbox-lite.sh
-sed -i 's/\r$//' install-singbox-lite.sh
-chmod 755 install-singbox-lite.sh
-./install-singbox-lite.sh
-```

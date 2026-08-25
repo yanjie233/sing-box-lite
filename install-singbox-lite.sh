@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: VLESS-Reality + Hysteria2 one-click installer and manager
-SCRIPT_VERSION="3.1.0"
+SCRIPT_VERSION="3.2.0"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 set -eu
 CONFIG_DIR="/etc/sing-box"
@@ -35,6 +35,7 @@ CERT_EMAIL=""
 CERT_HTTP_PORT="$DEFAULT_ACME_HTTP_PORT"
 HY2_HOST=""
 PUBLIC_IP=""
+IP_FAMILY=""
 SING_BOX_PATH="/usr/local/bin/sing-box"
 
 log() { printf '[sing-box-lite] %s\n' "$*"; }
@@ -120,6 +121,7 @@ show_status_summary() {
     printf '  安装模式：%s\n' "$mode"
     if [ "$v6only" = 1 ]; then printf '  网络：IPv6-only\n'
     elif [ "$listen_v6" = 1 ]; then printf '  网络：双栈（监听 IPv6）\n'
+    else printf '  网络：IPv4\n'
     fi
     printf '\033[1;36m├─────────────────────────────────────────────────┤\033[0m\n'
     print_status_row 'VLESS Reality' "$REALITY_SERVICE" "$reality_port" TCP
@@ -287,7 +289,7 @@ upgrade_sing_box() {
 }
 
 get_local_ipv4() {
-    # 本机网络接口上用于访问公网的 IPv4 地址（无则空，可能是 WARP/NAT 环境）
+    # 本机网络接口上用于访问公网的 IPv4 地址（无则空，可能是 WARP/NAT/LXD 环境）
     local_ip=''
     if have ip; then
         local_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
@@ -299,6 +301,15 @@ is_private_ipv4() {
     ip="$1"
     case "$ip" in
         0.*|10.*|127.*|169.254.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|192.168.*|100.6[4-9].*|100.7[0-9].*|100.8[0-9].*|100.9[0-9].*|100.1[01][0-9].*|100.12[0-7].*|192.0.0.*|198.18.*|198.19.*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+is_private_ipv6() {
+    # 过滤 ULA、链路本地、组播、文档地址和未指定地址。LXD 常见的 fd00::/8 必须排除。
+    ip6="$1"
+    ip6="$(printf '%s' "$ip6" | sed 's#/.*##; s#%.*$##' | tr '[:upper:]' '[:lower:]')"
+    case "$ip6" in
+        ''|'::'|'::1'|fc*:*|fd*:*|fe8*:*|fe9*:*|fea*:*|feb*:*|ff*:*|2001:db8:*|2001:10:*|::ffff:*) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -324,89 +335,128 @@ get_external_ipv4() {
 is_warp_v4_egress() {
     # 判断是否存在 WARP 风格的 v4 出口：本机无公网 IPv4，但 curl -4 有出口
     has_native_ipv4 && return 1
-    [ -n "$(get_external_ipv4)" ] || return 1
+    ext="$(get_external_ipv4)"
+    [ -n "$ext" ] || return 1
+    is_private_ipv4 "$ext" && return 1
     # 有 WireGuard 接口（wgcf/wg*）进一步佐证是 WARP
     if have wg && wg show interfaces 2>/dev/null | grep -qE 'wgcf|wg[0-9]+'; then return 0; fi
     # 没有 wg 佐证时也算“非本机 v4 出口”（可能 WARP 或无公网 v4 的 NAT）
     return 0
 }
 get_public_ip() {
-    # v6-only：只用本机公网 IPv6，绝不用 v4 出口（WARP 共享 IP 无法监听）
-    if [ "$V6_ONLY" = 1 ]; then
-        ip6="$(get_public_ipv6)"; [ -n "$ip6" ] && { printf '%s' "$ip6"; return; }
-        [ -n "${PUBLIC_IP:-}" ] && { printf '%s' "$PUBLIC_IP"; return; }
-        printf '%s' ''; return
-    fi
-    # 双栈/仅 v4：优先本机公网 IPv4，其次外部可见 IPv4 出口（NAT 端口转发兜底）
-    v4="$(get_local_ipv4)"
-    if [ -n "$v4" ] && ! is_private_ipv4 "$v4"; then printf '%s' "$v4"; return; fi
-    printf '%s' "$(get_external_ipv4)"
+    case "$IP_FAMILY" in
+        6) get_public_ipv6 ;;
+        4)
+            v4="$(get_local_ipv4)"
+            if [ -n "$v4" ] && ! is_private_ipv4 "$v4"; then printf '%s' "$v4"; else get_external_ipv4; fi
+            ;;
+        *)
+            v4="$(get_local_ipv4)"
+            if [ -n "$v4" ] && ! is_private_ipv4 "$v4"; then printf '%s' "$v4"; else get_public_ipv6; fi
+            ;;
+    esac
 }
-prompt_ipv6_options() {
-    # 检测本机 IPv6 支持，并询问监听/纯 v6-only
+prompt_ip_family() {
+    # 只把真正可路由的地址当作节点地址；LXD 的 fd00::/8 等地址不能用于公网节点。
     detect_ipv6_support
-    if [ "$HAS_IPV6" = 1 ]; then
-        # 关键判断：即使有 IPv4 出口（WARP/NAT），只要本机没有属于自己的公网 IPv4 就无法监听
-        if ! has_native_ipv4; then
-            printf '\n检测到本机有 IPv6，但本机没有可直接监听的公网 IPv4（可能使用 WARP/出口转发）。\n将按 IPv6-only 处理，监听 IPv6 并生成 IPv6 节点。\n'
-            V6_ONLY=1; LISTEN_IPV6=1
-            is_warp_v4_egress && warn '检测到 WARP 风格的 IPv4 出口：节点只走 IPv6，客户端请勿使用该 v4 出口地址。'
-            return 0
-        fi
-        printf '\n检测到本机有 IPv6 地址。\n是否同时监听 IPv6（双栈，推荐）？\n  1) 是（监听 IPv4 + IPv6）\n  2) 否（仅监听 IPv4）\n请选择（回车默认 1）：'
-        read -r listen_choice || listen_choice=1
-        case "$listen_choice" in
-            1|'') LISTEN_IPV6=1 ;;
-            2) LISTEN_IPV6=0 ;;
-            *) die '无效选项。' ;;
+
+    if [ -n "$PUBLIC_IP" ]; then
+        case "$PUBLIC_IP" in
+            *:*)
+                is_private_ipv6 "$PUBLIC_IP" && die "PUBLIC_IP 不是公网 IPv6：$PUBLIC_IP"
+                IP_FAMILY=6; V6_ONLY=1; LISTEN_IPV6=1
+                ;;
+            *)
+                is_private_ipv4 "$PUBLIC_IP" && die "PUBLIC_IP 不是公网 IPv4：$PUBLIC_IP"
+                IP_FAMILY=4; V6_ONLY=0; LISTEN_IPV6=0
+                ;;
         esac
+        return 0
+    fi
+
+    local_v4="$(get_local_ipv4)"
+    public_v4=''
+    if [ -n "$local_v4" ] && ! is_private_ipv4 "$local_v4"; then
+        public_v4="$local_v4"
     else
-        printf '\n未检测到本机 IPv6 地址。\n你的机器是否为“仅有 IPv6”（无公网 IPv4）？\n  1) 是 2) 否\n请选择（回车默认 2）：'
-        read -r v6only_choice || v6only_choice=2
-        case "$v6only_choice" in
-            1) V6_ONLY=1; LISTEN_IPV6=1 ;;
-            2|'') V6_ONLY=0; LISTEN_IPV6=0 ;;
+        external_v4="$(get_external_ipv4)"
+        if [ -n "$external_v4" ] && ! is_private_ipv4 "$external_v4"; then public_v4="$external_v4"; fi
+    fi
+    public_v6="$(get_public_ipv6)"
+
+    if [ -n "$public_v4" ] && [ -n "$public_v6" ]; then
+        native_v4=0
+        if has_native_ipv4; then native_v4=1; fi
+        if [ "$native_v4" = 1 ]; then
+            default_choice=1
+            printf '\n检测到可用 IPv4 和公网 IPv6，请选择节点地址：\n  1) IPv4（默认）\n  2) IPv6\n请选择：'
+        else
+            default_choice=2
+            printf '\n检测到 IPv4 出口和公网 IPv6，请选择节点地址：\n  1) IPv4（需要端口转发）\n  2) IPv6（默认）\n请选择：'
+        fi
+        read -r ip_choice || ip_choice="$default_choice"
+        [ -n "$ip_choice" ] || ip_choice="$default_choice"
+        case "$ip_choice" in
+            1)
+                PUBLIC_IP="$public_v4"; IP_FAMILY=4; V6_ONLY=0; LISTEN_IPV6=0
+                if [ "$native_v4" = 0 ]; then
+                    warn '当前 IPv4 不是本机网卡地址，可能是 WARP/NAT/LXD 共享出口；选择 IPv4 前请确认端口转发。'
+                fi
+                ;;
+            2)
+                PUBLIC_IP="$public_v6"; IP_FAMILY=6; V6_ONLY=1; LISTEN_IPV6=1
+                ;;
             *) die '无效选项。' ;;
         esac
+    elif [ -n "$public_v4" ]; then
+        PUBLIC_IP="$public_v4"; IP_FAMILY=4; V6_ONLY=0; LISTEN_IPV6=0
+        if ! has_native_ipv4; then
+            warn '检测到 IPv4 出口但不是本机网卡地址，可能需要额外端口转发。'
+        fi
+    elif [ -n "$public_v6" ]; then
+        PUBLIC_IP="$public_v6"; IP_FAMILY=6; V6_ONLY=1; LISTEN_IPV6=1
+        log '仅检测到公网 IPv6，将按 IPv6-only 处理。'
+    else
+        if [ "$HAS_IPV6" = 1 ]; then
+            warn '检测到 IPv6，但地址属于内网/保留范围（例如 fd00::/8），不会生成 IPv6 节点。'
+        fi
+        IP_FAMILY=''
+        V6_ONLY=0; LISTEN_IPV6=0
     fi
-    if [ "$V6_ONLY" = 1 ]; then log '识别为 IPv6-only 机器，将监听 IPv6 并生成 IPv6 节点。'; fi
-}
-get_node_region() {
-    geo=''
-    if have curl && { [ -z "$NODE_REGION_CODE" ] || [ -z "$NODE_REGION_EMOJI" ]; }; then
-        ip_ver='-4'; [ "$V6_ONLY" = 1 ] && ip_ver='-6'
-        geo="$(curl ${ip_ver}fsS --max-time 5 "https://ipwho.is/${PUBLIC_IP}?fields=country_code,flag" 2>/dev/null || true)"
-        [ -n "$NODE_REGION_CODE" ] || NODE_REGION_CODE="$(printf '%s' "$geo" | sed -n 's/.*"country_code"[[:space:]]*:[[:space:]]*"\([A-Za-z][A-Za-z]\)".*/\1/p' | head -n 1 | tr '[:lower:]' '[:upper:]')"
-        [ -n "$NODE_REGION_EMOJI" ] || NODE_REGION_EMOJI="$(printf '%s' "$geo" | sed -n 's/.*"emoji"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+
+    if [ "$IP_FAMILY" = 6 ]; then
+        is_warp_v4_egress && warn '检测到 WARP 风格的 IPv4 出口：当前节点使用 IPv6，客户端请勿使用该 v4 出口地址。' || true
     fi
-    [ -n "$NODE_REGION_CODE" ] || NODE_REGION_CODE=XX; [ -n "$NODE_REGION_EMOJI" ] || NODE_REGION_EMOJI='🌐'
+    return 0
 }
 detect_ipv6_support() {
-    # 检测本机是否存在全局（非链路本地）IPv6 地址
+    # 检测本机是否存在 IPv6 地址；公网地址另由 get_public_ipv6 过滤。
     if have ip; then
         ip -6 addr show scope global 2>/dev/null | grep -q 'inet6' && { HAS_IPV6=1; return 0; }
     fi
     if [ -d /proc/net/if_inet6 ]; then
-        # 过滤 fe80:: 链路本地
         awk '{ if ($1 !~ /^fe80/) found=1 } END { exit found ? 0 : 1 }' /proc/net/if_inet6 2>/dev/null && { HAS_IPV6=1; return 0; }
     fi
     HAS_IPV6=0
 }
 get_public_ipv6() {
-    # 尝试获取公网 IPv6（仅取全局地址）
+    # 获取本机真正可路由的 IPv6；不要把 LXD 的 fdxx::、fe80:: 等地址写入节点。
     ip6=''
     if have ip; then
-        ip6="$(ip -6 addr show scope global 2>/dev/null | grep -oE 'inet6 [0-9a-fA-F:]+' | head -n 1 | cut -d' ' -f2)"
+        ip6="$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}' || true)"
+        if [ -n "$ip6" ] && ! is_private_ipv6 "$ip6"; then printf '%s' "$ip6"; return; fi
+        for candidate in $(ip -6 addr show scope global 2>/dev/null | awk '$1=="inet6" {sub("/.*", "", $2); print $2}'); do
+            if ! is_private_ipv6 "$candidate"; then printf '%s' "$candidate"; return; fi
+        done
     fi
-    if [ -z "$ip6" ] && [ -r /proc/net/if_inet6 ]; then
-        # 按 if_inet6 拼接，跳过 fe80::
-        iface_line="$(awk '$1 !~ /^fe80/ {print; exit}' /proc/net/if_inet6 2>/dev/null)"
-        if [ -n "$iface_line" ]; then
-            hex="$(printf '%s\n' "$iface_line" | awk '{print $1}')"
-            ip6="$(printf '%s' "$hex" | sed 's/.\{4\}/&:/g; s/:$//')"
-        fi
+    if [ -r /proc/net/if_inet6 ]; then
+        # 按 if_inet6 拼接，跳过 fe80:: 和其他保留地址。
+        for hex in $(awk '$1 !~ /^fe80/ {print $1}' /proc/net/if_inet6 2>/dev/null); do
+            candidate="$(printf '%s' "$hex" | sed 's/..../&:/g; s/:$//')"
+            if ! is_private_ipv6 "$candidate"; then printf '%s' "$candidate"; return; fi
+        done
     fi
-    printf '%s' "$ip6"
+    printf '%s' ''
 }
 make_uuid() {
     if [ -r /proc/sys/kernel/random/uuid ]; then cat /proc/sys/kernel/random/uuid; return; fi
@@ -631,6 +681,7 @@ HY2_HOST=$HY2_HOST
 HY2_SNI=$HY2_SNI
 LISTEN_IPV6=$LISTEN_IPV6
 V6_ONLY=$V6_ONLY
+IP_FAMILY=$IP_FAMILY
 EOF
     chmod 600 "$STATE_FILE"
     {
@@ -727,8 +778,8 @@ prepare_install() {
     if is_protocol_enabled reality && is_protocol_enabled hy2 && [ "$REALITY_PORT" = "$HY2_PORT" ]; then die 'Reality TCP 和 Hysteria2 UDP 不能使用同一个端口。'; fi
     if [ "$CERT_MODE" = domain ]; then validate_domain "$CERT_DOMAIN" || die "证书域名格式无效：$CERT_DOMAIN"; fi
     install_base_packages; install_sing_box; SING_BOX="$(command -v sing-box)"; SING_BOX_PATH="$SING_BOX"
-    # 处理 IPv6：检测本机 IPv6、询问是否监听、识别是否 v6-only
-    prompt_ipv6_options
+    # 选择节点地址族；同时存在 IPv4 和公网 IPv6 时交给用户选择。
+    prompt_ip_family
     PUBLIC_IP="${PUBLIC_IP:-$(get_public_ip)}"
     if [ -z "$PUBLIC_IP" ]; then
         if [ "$V6_ONLY" = 1 ]; then
