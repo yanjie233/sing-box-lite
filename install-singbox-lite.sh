@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: VLESS-Reality + Hysteria2 one-click installer and manager
-SCRIPT_VERSION="3.2.1"
+SCRIPT_VERSION="3.2.2"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 set -eu
 CONFIG_DIR="/etc/sing-box"
@@ -797,7 +797,8 @@ prepare_install() {
         fi
         die '无法获取公网 IP，请设置 PUBLIC_IP 后重试。'
     fi
-    get_node_region; HY2_HOST="$PUBLIC_IP"
+    # 节点地区名称为可选环境变量；未设置时使用空名称，不阻断安装。
+    HY2_HOST="$PUBLIC_IP"
     mkdir -p "$CONFIG_DIR" "$CLIENT_DIR" /var/lib/sing-box; chmod 700 "$CONFIG_DIR" "$CLIENT_DIR"
     backup_file "$CONFIG_FILE"; backup_file "$REALITY_CONFIG_FILE"; backup_file "$HY2_CONFIG_FILE"
     UUID=''; HY2_PASSWORD=''; REALITY_PRIVATE_KEY=''; REALITY_PUBLIC_KEY=''
