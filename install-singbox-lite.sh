@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: VLESS-Reality + Hysteria2 one-click installer and manager
-SCRIPT_VERSION="3.2.0"
+SCRIPT_VERSION="3.2.1"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 set -eu
 CONFIG_DIR="/etc/sing-box"
@@ -32,7 +32,7 @@ HY2_PORT=""
 CERT_MODE="self"
 CERT_DOMAIN=""
 CERT_EMAIL=""
-CERT_HTTP_PORT="$DEFAULT_ACME_HTTP_PORT"
+CERT_HTTP_PORT="${ACME_HTTP_PORT:-}"
 HY2_HOST=""
 PUBLIC_IP=""
 IP_FAMILY=""
@@ -748,8 +748,14 @@ EOF
 }
 prompt_port() {
     label="$1"; default="$2"; current="$3"
-    if [ -n "$current" ]; then printf '%s：%s\n' "$label" "$current" >&2; printf '%s' "$current"; return; fi
-    printf '%s（回车使用默认 %s）：' "$label" "$default" >&2; read -r value || value=''; [ -n "$value" ] || value="$default"; printf '%s' "$value"
+    if [ -n "$current" ]; then
+        printf '%s（回车保持当前 %s）：' "$label" "$current" >&2
+    else
+        printf '%s（回车使用默认 %s）：' "$label" "$default" >&2
+    fi
+    read -r value || value=''
+    [ -n "$value" ] || value="${current:-$default}"
+    printf '%s' "$value"
 }
 prompt_install_options() {
     printf '\n安装协议：\n  1) Reality + Hysteria2（推荐）\n  2) 仅 Reality\n  3) 仅 Hysteria2\n请选择：'
@@ -776,6 +782,10 @@ prepare_install() {
     if is_protocol_enabled reality; then [ -n "$REALITY_PORT" ] || REALITY_PORT="$DEFAULT_REALITY_PORT"; validate_port "$REALITY_PORT" 'Reality TCP 端口'; fi
     if is_protocol_enabled hy2; then [ -n "$HY2_PORT" ] || HY2_PORT="$DEFAULT_HY2_PORT"; validate_port "$HY2_PORT" 'Hysteria2 UDP 端口'; fi
     if is_protocol_enabled reality && is_protocol_enabled hy2 && [ "$REALITY_PORT" = "$HY2_PORT" ]; then die 'Reality TCP 和 Hysteria2 UDP 不能使用同一个端口。'; fi
+    if [ "$CERT_MODE" != self ]; then
+        [ -n "$CERT_HTTP_PORT" ] || CERT_HTTP_PORT="$DEFAULT_ACME_HTTP_PORT"
+        validate_port "$CERT_HTTP_PORT" '证书验证端口'
+    fi
     if [ "$CERT_MODE" = domain ]; then validate_domain "$CERT_DOMAIN" || die "证书域名格式无效：$CERT_DOMAIN"; fi
     install_base_packages; install_sing_box; SING_BOX="$(command -v sing-box)"; SING_BOX_PATH="$SING_BOX"
     # 选择节点地址族；同时存在 IPv4 和公网 IPv6 时交给用户选择。
