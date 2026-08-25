@@ -7,7 +7,7 @@
 ```sh
 curl -fsSL https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh -o install-singbox-lite.sh
 chmod +x install-singbox-lite.sh
-sudo ./install-singbox-lite.sh
+./install-singbox-lite.sh
 ```
 
 安装完成后，脚本会创建快捷菜单命令：
