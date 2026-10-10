@@ -19,14 +19,46 @@ singbox
 ## 菜单功能
 
 ```text
-1. 一键快捷安装       Reality + Hysteria2，使用默认端口和自签名证书
-2. 自定义安装         选择全部、仅 Reality 或仅 Hysteria2
-3. 状态查询及管理     分别查看、开启、关闭、重启两个协议
-4. 节点信息           查看导入链接和客户端配置文件
-5. 升级脚本与 singbox   更新管理脚本和 sing-box 二进制
-6. 完全卸载           删除服务、配置、证书、节点信息和快捷命令
-0. 退出
+1) 一键快捷安装（Reality + Hysteria2）
+2) 自定义安装（仅 Reality / 仅 Hysteria2）
+3) 状态查询及管理
+4) 节点信息
+5) 升级脚本与 sing-box
+6) 完全卸载
+0) 退出
 ```
+
+菜单底部会显示当前安装状态（模式、Reality / Hysteria2 服务状态），未安装时给出提示。
+对非 TTY 输出（管道、重定向）会自动关闭颜色，可用 `NO_COLOR=1` 强制关闭。
+
+## 命令行用法
+
+脚本可以不进菜单直接调用：
+
+```sh
+./install-singbox-lite.sh                          # 交互菜单
+./install-singbox-lite.sh install [both|reality|hy2] [Reality端口] [Hy2端口]
+./install-singbox-lite.sh status                   # 运行状态、监听端口、安装信息
+./install-singbox-lite.sh manage                   # 服务开启 / 关闭 / 重启菜单
+./install-singbox-lite.sh nodes                    # 节点链接与客户端配置
+./install-singbox-lite.sh upgrade                  # 升级 sing-box 与本脚本
+./install-singbox-lite.sh uninstall                # 完全卸载
+./install-singbox-lite.sh help | version
+```
+
+其中 `install` 不带端口参数时回填上次安装使用的端口（见 `state.env`）。
+
+## 环境变量
+
+| 变量 | 作用 |
+| --- | --- |
+| `PUBLIC_IP` | 覆盖公网地址检测结果 |
+| `REALITY_SNI` | 指定 Reality 握手域名（默认 `academy.nvidia.com`） |
+| `ACME_HTTP_PORT` | 预填证书 HTTP 验证端口 |
+| `REMOTE_SCRIPT_URL` | 指定脚本升级地址 |
+| `NODE_REGION_EMOJI` / `NODE_REGION_CODE` | 节点名称前缀 / 后缀（可选） |
+| `FORCE_SCRIPT_UPDATE=1` | 脚本升级时忽略版本比较，强制覆盖 |
+| `NO_COLOR=1` | 关闭彩色输出 |
 
 ## 自定义安装
 
@@ -45,6 +77,10 @@ singbox
 
 两个协议现在可以独立管理，不再必须一起启动或停止。
 
+Reality 握手域名默认 `academy.nvidia.com`；自定义安装时可选择 `academy.nvidia.com`（默认）、`bing.com` 或输入自定义域名（也支持直接输入域名），重装时回填上次使用的域名。运行前设置 `REALITY_SNI=域名` 可直接指定，交互中不再回填。
+
+端口可以留空：交互安装回车使用默认值或上次安装的值；输入 `y` 确认才会覆盖已有安装（重新生成密钥、证书与节点链接），否则取消安装。
+
 ## 证书申请与部署
 
 安装 Hysteria2 时可选择：
@@ -60,6 +96,8 @@ singbox
 - HTTP 验证端口，可自定义，默认 `80`；也可通过环境变量 `ACME_HTTP_PORT` 预填
 
 验证端口必须能从公网访问；如果前面有端口转发，请把公网验证端口转发到脚本设置的本地端口。交互安装时直接输入端口即可，回车使用当前值或默认值 `80`。证书申请失败时脚本会停止，不会用不完整证书启动 Hysteria2。
+
+acme.sh 以 `--no-cron` 方式安装，脚本会另行写入一条每日 `03:17` 的 crontab 任务执行 `acme.sh --cron` 自动续期（日志写入 `/var/log/sing-box-lite-acme.log`，超过 1 MB 自动截断），卸载时会删除该任务。若机器没有 crontab，脚本会提示需要手动续期。
 
 ## 服务管理
 
@@ -79,6 +117,8 @@ singbox
 ```
 
 脚本优先使用 systemd；Alpine 等环境使用 OpenRC。
+
+服务状态会显示为中文标签：运行中、启动中、已停止、异常（`failed`）、未知、未安装。安装收尾时会自检实际在运行的服务，若未运行会给出提示（含排查命令），但不会中断安装。
 
 ## 安装文件
 
@@ -132,3 +172,7 @@ Hysteria2：UDP <Hysteria2端口>
 - systemd 或 OpenRC
 
 基础依赖为 `openssl`、`tar` 和 `curl` 或 `wget`。脚本会优先使用系统包管理器安装 sing-box，失败时回退到 GitHub Releases。
+
+下载时先尝试 IPv4（`curl -4`），失败后自动回退到系统默认协议族，因此 IPv6-only 机器同样可以下载。
+
+菜单 5「升级脚本与 sing-box」会先比较远程脚本版本，本地已是最新时跳过；需要强制覆盖时设置 `FORCE_SCRIPT_UPDATE=1`。升级前旧脚本会备份为 `install-singbox-lite.sh.bak.<版本号>`。

@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: VLESS-Reality + Hysteria2 one-click installer and manager
-SCRIPT_VERSION="3.2.2"
+SCRIPT_VERSION="3.3.0"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 set -eu
 CONFIG_DIR="/etc/sing-box"
@@ -16,7 +16,11 @@ SCRIPT_INSTALL_PATH="$SCRIPT_INSTALL_DIR/install-singbox-lite.sh"
 SHORTCUT_PATH="/usr/local/bin/singbox"
 REALITY_SERVICE="sing-box-reality"
 HY2_SERVICE="sing-box-hysteria2"
-REALITY_SNI="${REALITY_SNI:-www.cloudflare.com}"
+REALITY_SNI_ALT="bing.com"
+DEFAULT_REALITY_SNI="academy.nvidia.com"
+REALITY_SNI_FROM_ENV=0
+if [ -n "${REALITY_SNI:-}" ]; then REALITY_SNI_FROM_ENV=1; fi
+REALITY_SNI="${REALITY_SNI:-$DEFAULT_REALITY_SNI}"
 HY2_SNI="${HY2_SNI:-www.example.com}"
 REALITY_FINGERPRINT="${REALITY_FINGERPRINT:-firefox}"
 NODE_REGION_CODE="${NODE_REGION_CODE:-}"
@@ -38,19 +42,101 @@ PUBLIC_IP=""
 IP_FAMILY=""
 SING_BOX_PATH="/usr/local/bin/sing-box"
 
-log() { printf '[sing-box-lite] %s\n' "$*"; }
-warn() { printf '[sing-box-lite][WARN] %s\n' "$*" >&2; }
-die() { printf '[sing-box-lite][ERROR] %s\n' "$*" >&2; exit 1; }
+log() { printf '[sing-box-lite] %s\n' "$*" || true; }
+warn() { printf '[sing-box-lite][WARN] %s\n' "$*" >&2 || true; }
+die() {
+    printf '[sing-box-lite][ERROR] %s\n' "$*" >&2
+    if [ "${INSTALL_STARTED:-0}" = 1 ] && [ "${INSTALL_OK:-0}" != 1 ]; then
+        printf '[sing-box-lite][ERROR] 本次操作未完成，%s 内可能残留部分文件；可重新运行本脚本，或执行完全卸载。\n' "$CONFIG_DIR" >&2
+    fi
+    exit 1
+}
 have() { command -v "$1" >/dev/null 2>&1; }
-pause() { printf '\n按回车返回菜单...'; read -r _pause || true; }
-clear_screen() { if have clear; then clear 2>/dev/null || printf '\n\n'; else printf '\n\n'; fi; }
+pause() { printf '\n按回车返回菜单...' >&2; read -r _pause || true; }
+clear_screen() {
+    [ -t 1 ] || return 0
+    if have clear; then clear 2>/dev/null || printf '\n\n'; else printf '\n\n'; fi
+}
+
+# 终端配色：非 TTY 输出或设置 NO_COLOR 时自动关闭颜色
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    _esc="$(printf '\033')"
+    C_RESET="${_esc}[0m"; C_BOLD="${_esc}[1m"; C_DIM="${_esc}[2m"
+    C_RED="${_esc}[1;31m"; C_GREEN="${_esc}[1;32m"; C_YELLOW="${_esc}[1;33m"
+    C_BLUE="${_esc}[1;34m"; C_CYAN="${_esc}[1;36m"
+    unset _esc
+else
+    C_RESET=''; C_BOLD=''; C_DIM=''; C_RED=''; C_GREEN=''; C_YELLOW=''; C_BLUE=''; C_CYAN=''
+fi
+
+# 边框内宽度（终端列数），供 box_line / pad_right 对齐使用
+BOX_INNER=46
+BOX_HLINE=''
+_box_i=0
+while [ "$_box_i" -lt "$BOX_INNER" ]; do BOX_HLINE="${BOX_HLINE}─"; _box_i=$((_box_i + 1)); done
+unset _box_i
+
+# 计算终端显示宽度：中日韩/全角字符按 2 列，ANSI 颜色序列不计
+display_width() {
+    printf '%s' "$1" | LC_ALL=C awk '
+        BEGIN { w = 0; for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
+        {
+            n = length($0); i = 1
+            while (i <= n) {
+                b = ord[substr($0, i, 1)] + 0
+                if (b == 27) { while (i <= n && (ord[substr($0, i, 1)] + 0) != 109) i++; i++; continue }
+                if (b < 128) { w += 1; i += 1 }
+                else if (b < 224) { w += 1; i += 2 }
+                else if (b < 240) { if (b >= 227) w += 2; else w += 1; i += 3 }
+                else { w += 2; i += 4 }
+            }
+        }
+        END { print w + 0 }'
+}
+
+# 按终端列宽补齐右侧空格：pad_right <文本> <目标宽度>
+pad_right() {
+    _text="$1"
+    _target="${2:-0}"
+    _width="$(display_width "$1")"
+    _pad=$((_target - _width))
+    if [ "$_pad" -gt 0 ]; then printf '%s%*s' "$_text" "$_pad" ''; else printf '%s' "$_text"; fi
+}
+
+box_top() { printf '%s┌%s┐%s\n' "$C_CYAN" "$BOX_HLINE" "$C_RESET"; }
+box_mid() { printf '%s├%s┤%s\n' "$C_CYAN" "$BOX_HLINE" "$C_RESET"; }
+box_bottom() { printf '%s└%s┘%s\n' "$C_CYAN" "$BOX_HLINE" "$C_RESET"; }
+box_line() { printf '%s│%s│%s\n' "$C_CYAN" "$(pad_right "$1" "$BOX_INNER")" "$C_RESET"; }
+
+# 原始状态 → 带颜色的中文标签
+status_display() {
+    case "$1" in
+        active) printf '%s运行中%s' "$C_GREEN" "$C_RESET" ;;
+        activating|reloading) printf '%s启动中%s' "$C_BLUE" "$C_RESET" ;;
+        inactive|dead|stopped) printf '%s已停止%s' "$C_YELLOW" "$C_RESET" ;;
+        failed) printf '%s异常%s' "$C_RED" "$C_RESET" ;;
+        unknown) printf '%s未知%s' "$C_YELLOW" "$C_RESET" ;;
+        未安装) printf '%s未安装%s' "$C_DIM" "$C_RESET" ;;
+        *) printf '%s%s%s' "$C_YELLOW" "$1" "$C_RESET" ;;
+    esac
+}
+service_state_label() {
+    if service_exists "$1"; then status_display "$(service_status "$1")"; else status_display '未安装'; fi
+}
+print_ok() { printf '%s[OK]%s %s\n' "$C_GREEN" "$C_RESET" "$*" || true; }
+print_fail() { printf '%s[失败]%s %s\n' "$C_RED" "$C_RESET" "$*" >&2 || true; }
 
 download_file() {
+    # IPv6-only 机器上 `curl -4` 会直接失败，先试 IPv4 再回退到默认协议族
     url="$1"; destination="$2"
-    if have curl; then curl -4fsSL --max-time 60 "$url" -o "$destination"
-    elif have wget; then wget -q --timeout=60 -O "$destination" "$url"
+    if have curl; then
+        curl -4fsSL --max-time 60 "$url" -o "$destination" 2>/dev/null && return 0
+        curl -fsSL --max-time 60 "$url" -o "$destination"
+    elif have wget; then
+        wget -q --timeout=60 -O "$destination" "$url"
     else return 1; fi
 }
+
 
 validate_domain() {
     domain="$1"
@@ -59,9 +145,14 @@ validate_domain() {
 }
 validate_port() {
     port="$1"; label="$2"
-    case "$port" in ''|*[!0-9]*) die "$label 必须是 1-65535 的数字。" ;; esac
-    [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "$label 必须是 1-65535。"
+    is_valid_port "$port" || die "$label 必须是 1-65535 的数字。"
 }
+is_valid_port() {
+    case "${1:-}" in ''|*[!0-9]*) return 1 ;; esac
+    [ "${#1}" -le 5 ] || return 1
+    [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
 
 is_protocol_enabled() {
     case "$1" in
@@ -73,8 +164,12 @@ is_protocol_enabled() {
 
 service_status() {
     service="$1"
-    if have systemctl; then systemctl is-active "$service" 2>/dev/null || printf 'inactive'
-    elif have rc-service; then rc-service "$service" status >/dev/null 2>&1 && printf 'active' || printf 'inactive'
+    if have systemctl; then
+        # systemctl is-active 即使失败也会输出状态（failed/inactive 等），不能用 || 再打印一次
+        _st="$(systemctl is-active "$service" 2>/dev/null || true)"
+        if [ -n "$_st" ]; then printf '%s' "$_st"; else printf 'unknown'; fi
+    elif have rc-service; then
+        if rc-service "$service" status >/dev/null 2>&1; then printf 'active'; else printf 'inactive'; fi
     else printf 'unknown'; fi
 }
 service_exists() {
@@ -102,82 +197,148 @@ service_action() {
         esac
     else warn '未检测到 systemd 或 OpenRC。'; return 1; fi
 }
-print_status_row() {
+status_row() {
     label="$1"; service="$2"; port="$3"; transport="$4"
     if service_exists "$service"; then status="$(service_status "$service")"; else status='未安装'; fi
-    case "$status" in active) mark='运行中' ;; inactive) mark='已停止' ;; unknown) mark='未知' ;; *) mark="$status" ;; esac
-    printf '  %-14s %-8s %-7s %s\n' "$label" "$mark" "$transport" "${port:-未设置}"
+    box_line "  $(pad_right "$label" 16)$(pad_right "$(status_display "$status")" 10)$(pad_right "$transport" 6)${port:-—}"
 }
 read_state_value() {
     key="$1"; [ -f "$STATE_FILE" ] || return 0
     sed -n "s/^${key}=//p" "$STATE_FILE" | head -n 1
 }
+# 从状态文件恢复安装参数（端口/模式/证书），用于状态展示、服务管理与升级
+load_state() {
+    [ -f "$STATE_FILE" ] || return 1
+    _v="$(read_state_value INSTALL_MODE)"; if [ -n "$_v" ]; then INSTALL_MODE="$_v"; fi
+    REALITY_PORT="$(read_state_value REALITY_PORT)"
+    HY2_PORT="$(read_state_value HY2_PORT)"
+    _v="$(read_state_value CERT_MODE)"; if [ -n "$_v" ]; then CERT_MODE="$_v"; fi
+    CERT_DOMAIN="$(read_state_value CERT_DOMAIN)"
+    CERT_HTTP_PORT="$(read_state_value CERT_HTTP_PORT)"
+    _v="$(read_state_value HY2_SNI)"; if [ -n "$_v" ]; then HY2_SNI="$_v"; fi
+    return 0
+}
 show_status_summary() {
-    [ "$(id -u)" -eq 0 ] || die '查询状态请使用 root 运行。'
+    if [ ! -f "$STATE_FILE" ]; then
+        printf '\n'; box_top
+        box_line "  ${C_YELLOW}尚未安装${C_RESET}：可选择 1) 一键快捷安装 开始部署"
+        box_bottom; printf '\n'
+        return 0
+    fi
     mode="$(read_state_value INSTALL_MODE)"; [ -n "$mode" ] || mode="$INSTALL_MODE"
     reality_port="$(read_state_value REALITY_PORT)"; hy2_port="$(read_state_value HY2_PORT)"
     listen_v6="$(read_state_value LISTEN_IPV6)"; v6only="$(read_state_value V6_ONLY)"
-    printf '\n\033[1;36m┌────────────── sing-box-lite 状态 ──────────────┐\033[0m\n'
-    printf '  安装模式：%s\n' "$mode"
-    if [ "$v6only" = 1 ]; then printf '  网络：IPv6-only\n'
-    elif [ "$listen_v6" = 1 ]; then printf '  网络：双栈（监听 IPv6）\n'
-    else printf '  网络：IPv4\n'
+    if [ "$v6only" = 1 ]; then net='IPv6-only'
+    elif [ "$listen_v6" = 1 ]; then net='双栈（监听 IPv6）'
+    else net='IPv4'
     fi
-    printf '\033[1;36m├─────────────────────────────────────────────────┤\033[0m\n'
-    print_status_row 'VLESS Reality' "$REALITY_SERVICE" "$reality_port" TCP
-    print_status_row 'Hysteria2' "$HY2_SERVICE" "$hy2_port" UDP
-    printf '\033[1;36m└─────────────────────────────────────────────────┘\033[0m\n'
+    printf '\n'; box_top
+    box_line "  ${C_GREEN}sing-box-lite${C_RESET} 状态    ${C_DIM}脚本 v${SCRIPT_VERSION}${C_RESET}"
+    box_mid
+    box_line "  安装模式：${mode}    网络：${net}"
+    box_mid
+    box_line "  $(pad_right '协议' 16)$(pad_right '状态' 10)$(pad_right '传输' 6)端口"
+    status_row 'VLESS Reality' "$REALITY_SERVICE" "$reality_port" TCP
+    status_row 'Hysteria2' "$HY2_SERVICE" "$hy2_port" UDP
+    box_mid
+    if have sing-box; then
+        box_line "  ${C_DIM}sing-box $(sing-box version 2>/dev/null | awk 'NR==1{print $3}')${C_RESET}"
+    else
+        box_line "  ${C_DIM}sing-box 未安装${C_RESET}"
+    fi
+    box_bottom
+    printf '\n'
+    return 0
 }
 show_status() {
+    [ "$(id -u)" -eq 0 ] || die '查询状态请使用 root 运行。'
     show_status_summary
-    if have ss; then
-        printf '\n监听端口：\n'
-        ss -lntup 2>/dev/null | grep -E 'sing-box|LISTEN|UNCONN' || true
+    [ -f "$STATE_FILE" ] || return 0
+    reality_port="$(read_state_value REALITY_PORT)"; hy2_port="$(read_state_value HY2_PORT)"
+    ports=''
+    [ -n "$reality_port" ] && ports="$reality_port"
+    [ -n "$hy2_port" ] && ports="${ports:+$ports|}$hy2_port"
+    if have ss && [ -n "$ports" ]; then
+        printf '监听端口：\n'
+        ss -lntup 2>/dev/null | grep -E "[:.](${ports})([^0-9]|$)" || printf '  未检测到监听，相关服务可能未运行。\n'
+        printf '\n'
     fi
-    if have systemctl; then
-        printf '\n服务状态：\n'
-        systemctl --no-pager --full status "$REALITY_SERVICE" "$HY2_SERVICE" 2>/dev/null | sed -n '1,80p' || true
-    elif have rc-service; then
-        rc-service "$REALITY_SERVICE" status 2>/dev/null || true
-        rc-service "$HY2_SERVICE" status 2>/dev/null || true
-    fi
-    [ -f "$CONFIG_DIR/install-info.txt" ] && { printf '\n安装信息：\n'; sed -n '1,80p' "$CONFIG_DIR/install-info.txt"; }
+    printf '服务状态：\n'
+    svc_printed=0
+    for _svc in "$REALITY_SERVICE" "$HY2_SERVICE"; do
+        if service_exists "$_svc"; then
+            printf '  %s %s\n' "$(pad_right "$_svc" 24)" "$(status_display "$(service_status "$_svc")")"
+            svc_printed=1
+        fi
+    done
+    [ "$svc_printed" = 1 ] || printf '  暂无已安装的服务。\n'
+    [ -f "$CONFIG_DIR/install-info.txt" ] && { printf '\n安装信息：\n'; sed -n '1,60p' "$CONFIG_DIR/install-info.txt"; }
+    return 0
 }
 
+run_service_action() {
+    action="$1"; service="$2"; name="$3"
+    case "$action" in start) act='开启' ;; stop) act='关闭' ;; restart) act='重启' ;; *) act="$action" ;; esac
+    if ! service_exists "$service"; then warn "${name} 服务未安装。"; return 1; fi
+    if service_action "$service" "$action"; then
+        print_ok "${name} ${act}成功"
+    else
+        print_fail "${name} ${act}失败"
+        return 1
+    fi
+}
+all_service_action() {
+    rc=0
+    if is_protocol_enabled reality; then
+        if service_exists "$REALITY_SERVICE"; then run_service_action "$1" "$REALITY_SERVICE" 'Reality' || rc=1
+        else warn 'Reality 服务未安装，已跳过。'; fi
+    fi
+    if is_protocol_enabled hy2; then
+        if service_exists "$HY2_SERVICE"; then run_service_action "$1" "$HY2_SERVICE" 'Hysteria2' || rc=1
+        else warn 'Hysteria2 服务未安装，已跳过。'; fi
+    fi
+    [ "$rc" -eq 0 ]
+}
 manage_services() {
-    [ "$(id -u)" -eq 0 ] || die '管理服务请使用 root 运行。'
+    [ "$(id -u)" -eq 0 ] || { warn '管理服务请使用 root 运行。'; return 1; }
+    if [ ! -f "$STATE_FILE" ]; then warn '尚未安装，请先执行安装。'; return 1; fi
+    load_state || true
     while :; do
         clear_screen; show_status_summary
-        printf '\n\033[1;33m状态管理\033[0m\n'
+        printf '%s状态管理%s\n' "$C_BOLD" "$C_RESET"
         printf '  1) 开启 Reality       2) 关闭 Reality       3) 重启 Reality\n'
         printf '  4) 开启 Hysteria2     5) 关闭 Hysteria2     6) 重启 Hysteria2\n'
         printf '  7) 开启全部           8) 关闭全部           9) 重启全部\n'
-        printf '  0) 返回\n请选择操作：'
+        printf '  0) 返回上一级菜单\n'
+        printf '请选择操作：' >&2
         read -r choice || return 0
         case "$choice" in
-            1) service_action "$REALITY_SERVICE" start || true ;;
-            2) service_action "$REALITY_SERVICE" stop || true ;;
-            3) service_action "$REALITY_SERVICE" restart || true ;;
-            4) service_action "$HY2_SERVICE" start || true ;;
-            5) service_action "$HY2_SERVICE" stop || true ;;
-            6) service_action "$HY2_SERVICE" restart || true ;;
-            7) service_action "$REALITY_SERVICE" start || true; service_action "$HY2_SERVICE" start || true ;;
-            8) service_action "$REALITY_SERVICE" stop || true; service_action "$HY2_SERVICE" stop || true ;;
-            9) service_action "$REALITY_SERVICE" restart || true; service_action "$HY2_SERVICE" restart || true ;;
+            1) run_service_action start "$REALITY_SERVICE" 'Reality' || true ;;
+            2) run_service_action stop "$REALITY_SERVICE" 'Reality' || true ;;
+            3) run_service_action restart "$REALITY_SERVICE" 'Reality' || true ;;
+            4) run_service_action start "$HY2_SERVICE" 'Hysteria2' || true ;;
+            5) run_service_action stop "$HY2_SERVICE" 'Hysteria2' || true ;;
+            6) run_service_action restart "$HY2_SERVICE" 'Hysteria2' || true ;;
+            7) all_service_action start || true ;;
+            8) all_service_action stop || true ;;
+            9) all_service_action restart || true ;;
             0) return 0 ;;
             *) warn '无效选项。' ;;
         esac
-        printf '\n当前状态：\n'; show_status_summary; pause
+        pause
     done
 }
 
+
 view_nodes() {
-    [ "$(id -u)" -eq 0 ] || die '查看节点请使用 root 运行。'
-    [ -f "$CLIENT_DIR/links.txt" ] || die '未找到节点信息，请先安装。'
-    printf '\n\033[1;36m==== 节点信息与导入链接 ====\033[0m\n'
+    [ "$(id -u)" -eq 0 ] || { warn '查看节点请使用 root 运行。'; return 1; }
+    [ -f "$CLIENT_DIR/links.txt" ] || { warn '未找到节点信息，请先安装。'; return 1; }
+    printf '\n%s==== 节点信息与导入链接 ====%s\n' "$C_CYAN" "$C_RESET"
     cat "$CLIENT_DIR/links.txt"
-    printf '\n客户端文件目录：%s\n' "$CLIENT_DIR"
+    printf '\n%s客户端文件目录：%s%s\n' "$C_DIM" "$CLIENT_DIR" "$C_RESET"
+    return 0
 }
+
 
 remove_service_files() {
     if have systemctl; then
@@ -195,10 +356,13 @@ remove_service_files() {
 }
 uninstall_singbox() {
     [ "$(id -u)" -eq 0 ] || die '卸载请使用 root 运行。'
-    printf '此操作将停止并删除两个协议服务、配置、证书、节点信息、快捷命令和本地 sing-box。\n输入 yes 确认：'
+    printf '此操作将停止并删除两个协议服务、配置、证书、节点信息、快捷命令和本地 sing-box。\n输入 yes 确认：' >&2
     read -r confirm || true
     [ "$confirm" = yes ] || { log '已取消卸载。'; return 0; }
+    INSTALL_STARTED=0; INSTALL_OK=0
     remove_service_files
+    remove_acme_renewal_cron
+
     if [ -x /usr/local/bin/sing-box ]; then rm -f /usr/local/bin/sing-box
     elif [ -x /usr/bin/sing-box ] && [ -r /etc/os-release ]; then
         # Remove package-managed binaries through the package manager.
@@ -214,7 +378,7 @@ uninstall_singbox() {
             *) warn '检测到 /usr/bin/sing-box，但无法判断包管理器；请手动卸载。' ;;
         esac
     fi
-    rm -rf "$CONFIG_DIR" /var/lib/sing-box "$SCRIPT_INSTALL_DIR" "$SHORTCUT_PATH" /usr/local/bin/singbox-lite
+    rm -rf "$CONFIG_DIR" /var/lib/sing-box "$SCRIPT_INSTALL_DIR" "$SHORTCUT_PATH" /usr/local/bin/singbox-lite /var/log/sing-box-lite-acme.log
     log '完全卸载完成；未删除 curl、wget、openssl、tar 等系统依赖。'
 }
 
@@ -282,11 +446,18 @@ install_sing_box() {
 }
 upgrade_sing_box() {
     [ "$(id -u)" -eq 0 ] || die '升级 sing-box 请使用 root 运行。'
+    # 按已安装模式恢复状态，避免升级时错误地重启未安装的协议服务
+    load_state || warn '未找到安装状态文件，按全部协议处理。'
     install_base_packages; FORCE_SING_BOX_UPDATE=1 install_sing_box
-    if is_protocol_enabled reality; then service_action "$REALITY_SERVICE" restart || true; fi
-    if is_protocol_enabled hy2; then service_action "$HY2_SERVICE" restart || true; fi
+    if is_protocol_enabled reality && service_exists "$REALITY_SERVICE"; then
+        service_action "$REALITY_SERVICE" restart || warn 'Reality 服务重启失败。'
+    fi
+    if is_protocol_enabled hy2 && service_exists "$HY2_SERVICE"; then
+        service_action "$HY2_SERVICE" restart || warn 'Hysteria2 服务重启失败。'
+    fi
     log "sing-box 已更新：$(sing-box version | head -n 1)"
 }
+
 
 get_local_ipv4() {
     # 本机网络接口上用于访问公网的 IPv4 地址（无则空，可能是 WARP/NAT/LXD 环境）
@@ -389,25 +560,29 @@ prompt_ip_family() {
         if has_native_ipv4; then native_v4=1; fi
         if [ "$native_v4" = 1 ]; then
             default_choice=1
-            printf '\n检测到可用 IPv4 和公网 IPv6，请选择节点地址：\n  1) IPv4（默认）\n  2) IPv6\n请选择：'
+            printf '\n检测到可用 IPv4 和公网 IPv6，请选择节点地址：\n  1) IPv4（默认）\n  2) IPv6\n请选择：' >&2
         else
             default_choice=2
-            printf '\n检测到 IPv4 出口和公网 IPv6，请选择节点地址：\n  1) IPv4（需要端口转发）\n  2) IPv6（默认）\n请选择：'
+            printf '\n检测到 IPv4 出口和公网 IPv6，请选择节点地址：\n  1) IPv4（需要端口转发）\n  2) IPv6（默认）\n请选择：' >&2
         fi
-        read -r ip_choice || ip_choice="$default_choice"
-        [ -n "$ip_choice" ] || ip_choice="$default_choice"
-        case "$ip_choice" in
-            1)
-                PUBLIC_IP="$public_v4"; IP_FAMILY=4; V6_ONLY=0; LISTEN_IPV6=0
-                if [ "$native_v4" = 0 ]; then
-                    warn '当前 IPv4 不是本机网卡地址，可能是 WARP/NAT/LXD 共享出口；选择 IPv4 前请确认端口转发。'
-                fi
-                ;;
-            2)
-                PUBLIC_IP="$public_v6"; IP_FAMILY=6; V6_ONLY=1; LISTEN_IPV6=1
-                ;;
-            *) die '无效选项。' ;;
-        esac
+        while :; do
+            read -r ip_choice || ip_choice=''
+            [ -n "$ip_choice" ] || ip_choice="$default_choice"
+            case "$ip_choice" in
+                1)
+                    PUBLIC_IP="$public_v4"; IP_FAMILY=4; V6_ONLY=0; LISTEN_IPV6=0
+                    if [ "$native_v4" = 0 ]; then
+                        warn '当前 IPv4 不是本机网卡地址，可能是 WARP/NAT/LXD 共享出口；选择 IPv4 前请确认端口转发。'
+                    fi
+                    break
+                    ;;
+                2)
+                    PUBLIC_IP="$public_v6"; IP_FAMILY=6; V6_ONLY=1; LISTEN_IPV6=1
+                    break
+                    ;;
+                *) warn '无效选项，请输入 1 或 2。' ;;
+            esac
+        done
     elif [ -n "$public_v4" ]; then
         PUBLIC_IP="$public_v4"; IP_FAMILY=4; V6_ONLY=0; LISTEN_IPV6=0
         if ! has_native_ipv4; then
@@ -478,12 +653,49 @@ install_acme_sh() {
     rm -f "$tmp_acme"
     [ -x "$ACME_HOME/acme.sh" ] || die 'acme.sh 安装后未找到可执行文件。'
 }
+ACME_CRON_MARKER='# sing-box-lite-acme-renewal'
+install_acme_renewal_cron() {
+    # acme.sh 安装时使用了 --no-cron，这里补一条每日续期任务，避免 90 天后证书过期
+    ACME_HOME="${ACME_HOME:-/root/.acme.sh}"
+    if ! have crontab; then
+        warn '未找到 crontab，无法安装证书自动续期任务；证书约 90 天过期，请手动执行 acme.sh --cron 续期。'
+        return 0
+    fi
+    renew_log="/var/log/sing-box-lite-acme.log"
+    remove_acme_renewal_cron
+    cron_line="17 3 * * * L=$renew_log; [ -f \$L ] && [ \$(wc -c < \$L) -gt 1048576 ] && : > \$L; $ACME_HOME/acme.sh --home $ACME_HOME --cron >> \$L 2>&1 $ACME_CRON_MARKER"
+    tmp_cron="$(mktemp)"
+    { crontab -l 2>/dev/null | grep -vF "$ACME_CRON_MARKER" || true; printf '%s\n' "$cron_line"; } > "$tmp_cron"
+    if crontab "$tmp_cron" 2>/dev/null; then
+        log "已添加证书自动续期任务（每日 03:17），日志：$renew_log"
+        log '请确认 cron/crond 服务正在运行，否则证书不会自动续期。'
+    else
+        warn '写入 crontab 失败，证书不会自动续期；请手动添加 acme.sh --cron 任务。'
+    fi
+    rm -f "$tmp_cron"
+    return 0
+}
+remove_acme_renewal_cron() {
+    have crontab || return 0
+    current_cron="$(crontab -l 2>/dev/null || true)"
+    case "$current_cron" in *"$ACME_CRON_MARKER"*) ;; *) return 0 ;; esac
+    tmp_cron="$(mktemp)"
+    printf '%s\n' "$current_cron" | grep -vF "$ACME_CRON_MARKER" > "$tmp_cron" || true
+    crontab "$tmp_cron" 2>/dev/null || true
+    rm -f "$tmp_cron"
+    return 0
+}
 issue_acme_certificate() {
     [ "$CERT_MODE" = domain ] || [ "$CERT_MODE" = ip ] || return 0
     install_acme_sh
     acme="${ACME_HOME:-/root/.acme.sh}/acme.sh"
     validate_port "$CERT_HTTP_PORT" '证书验证端口'
-    service_action "$HY2_SERVICE" stop || true
+    hy2_was_running=0
+    if service_exists "$HY2_SERVICE" && [ "$(service_status "$HY2_SERVICE")" = active ]; then
+        hy2_was_running=1
+        service_action "$HY2_SERVICE" stop || true
+    fi
+    reload_cmd="systemctl restart $HY2_SERVICE 2>/dev/null || rc-service $HY2_SERVICE restart 2>/dev/null || true"
     log "申请 $CERT_MODE 证书，验证端口：$CERT_HTTP_PORT"
     if [ "$CERT_MODE" = domain ]; then
         validate_domain "$CERT_DOMAIN" || die "证书域名格式无效：$CERT_DOMAIN"
@@ -491,18 +703,21 @@ issue_acme_certificate() {
         [ "$V6_ONLY" = 1 ] && listen_v6_flag='--listen-v6'
         "$acme" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
         "$acme" --issue --standalone -d "$CERT_DOMAIN" --httpport "$CERT_HTTP_PORT" $listen_v6_flag || die '域名证书申请失败。请确认域名解析、验证端口可达且无其他程序占用。'
-        "$acme" --install-cert -d "$CERT_DOMAIN" --fullchain-file "$CERT_FILE" --key-file "$KEY_FILE" || die '域名证书部署失败。'
+        "$acme" --install-cert -d "$CERT_DOMAIN" --fullchain-file "$CERT_FILE" --key-file "$KEY_FILE" --reloadcmd "$reload_cmd" || die '域名证书部署失败。'
         HY2_SNI="$CERT_DOMAIN"; HY2_HOST="$CERT_DOMAIN"
     else
         ip_flag='--ip'; [ "$V6_ONLY" = 1 ] && ip_flag='--ipv6 --ip'
         "$acme" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
         "$acme" --issue --standalone $ip_flag "$PUBLIC_IP" --httpport "$CERT_HTTP_PORT" || die 'IP 证书申请失败。请确认当前 acme.sh/CA 支持 IP 证书，且公网 IP 与验证端口可达。'
-        "$acme" --install-cert -d "$PUBLIC_IP" --fullchain-file "$CERT_FILE" --key-file "$KEY_FILE" || die 'IP 证书部署失败。'
+        "$acme" --install-cert -d "$PUBLIC_IP" --fullchain-file "$CERT_FILE" --key-file "$KEY_FILE" --reloadcmd "$reload_cmd" || die 'IP 证书部署失败。'
         HY2_SNI="$PUBLIC_IP"; HY2_HOST="$PUBLIC_IP"
     fi
     chmod 600 "$KEY_FILE"; chmod 644 "$CERT_FILE"
+    install_acme_renewal_cron
+    if [ "$hy2_was_running" = 1 ]; then service_action "$HY2_SERVICE" start || true; fi
     log "证书已部署到：$CERT_FILE / $KEY_FILE"
 }
+
 backup_file() {
     file="$1"; [ -f "$file" ] || return 0
     backup="$file.bak.$(date +%Y%m%d-%H%M%S)"; cp -p "$file" "$backup"; warn "已备份旧文件：$backup"
@@ -540,11 +755,14 @@ EOF
 }
 write_config() {
     destination="$1"; force="${2:-all}"
-    case "$force" in
-        reality) if [ "$INSTALL_MODE" = both ] || [ "$INSTALL_MODE" = reality ]; then enable_reality=1; else enable_reality=0; fi; enable_hy2=0 ;;
-        hy2) enable_reality=0; if [ "$INSTALL_MODE" = both ] || [ "$INSTALL_MODE" = hy2 ]; then enable_hy2=1; else enable_hy2=0; fi ;;
-        all) if [ "$INSTALL_MODE" = both ] || [ "$INSTALL_MODE" = reality ]; then enable_reality=1; else enable_reality=0; fi; if [ "$INSTALL_MODE" = both ] || [ "$INSTALL_MODE" = hy2 ]; then enable_hy2=1; else enable_hy2=0; fi ;;
-    esac
+    enable_reality=0; enable_hy2=0
+    # force: reality / hy2 / all（默认 all，按 INSTALL_MODE 决定启用哪些入站）
+    if [ "$force" = reality ] || [ "$force" = all ]; then
+        if is_protocol_enabled reality; then enable_reality=1; fi
+    fi
+    if [ "$force" = hy2 ] || [ "$force" = all ]; then
+        if is_protocol_enabled hy2; then enable_hy2=1; fi
+    fi
     {
         cat <<EOF
 {
@@ -564,11 +782,12 @@ EOF
     chmod 600 "$destination"
 }
 write_client_files() {
-    URL_HOST="$PUBLIC_IP"; case "$PUBLIC_IP" in *:*) URL_HOST="[$PUBLIC_IP]" ;; esac
-    HOST_ADDR="$HY2_HOST"; case "$HOST_ADDR" in *:*) HOST_ADDR="[$HOST_ADDR]" ;; esac
+    URL_HOST="$PUBLIC_IP"; case "$URL_HOST" in *:*) URL_HOST="[$URL_HOST]" ;; esac
+    HOST_ADDR="${HY2_HOST:-$PUBLIC_IP}"; case "$HOST_ADDR" in *:*) HOST_ADDR="[$HOST_ADDR]" ;; esac
     rm -f "$CLIENT_DIR/reality.json" "$CLIENT_DIR/hysteria2.json" "$CLIENT_DIR/links.txt"
     : > "$CLIENT_DIR/links.txt"
     node_name="${NODE_REGION_EMOJI}${NODE_REGION_CODE}"
+    [ -n "$node_name" ] || node_name="$PUBLIC_IP"
     if is_protocol_enabled reality; then
         cat > "$CLIENT_DIR/reality.json" <<EOF
 {
@@ -636,17 +855,36 @@ depend() { need net; after firewall; }
 EOF
     chmod +x "/etc/init.d/$service"
 }
+enabled_services() {
+    _svcs=''
+    if is_protocol_enabled reality; then _svcs="$REALITY_SERVICE"; fi
+    if is_protocol_enabled hy2; then _svcs="${_svcs:+$_svcs }$HY2_SERVICE"; fi
+    printf '%s' "$_svcs"
+}
+start_service_quiet() {
+    # 启动失败只提示不中断安装，配置已通过 sing-box check 校验
+    service="$1"; config="$2"; manager="$3"
+    if [ "$manager" = systemd ]; then
+        systemctl enable "$service" >/dev/null 2>&1 || warn "无法设置 $service 开机自启。"
+        systemctl restart "$service" || warn "启动 $service 失败，请检查配置 $config 与 journalctl -u $service。"
+    else
+        rc-update add "$service" default >/dev/null 2>&1 || true
+        rc-service "$service" restart || rc-service "$service" start || warn "启动 $service 失败，请查看 /var/log/$service.err。"
+    fi
+    return 0
+}
 write_services() {
     mkdir -p /var/lib/sing-box
+    svcs="$(enabled_services)"
     if have systemctl; then
         systemctl disable --now sing-box "$REALITY_SERVICE" "$HY2_SERVICE" >/dev/null 2>&1 || true
         rm -f /etc/systemd/system/sing-box.service "/etc/systemd/system/$REALITY_SERVICE.service" "/etc/systemd/system/$HY2_SERVICE.service"
         if is_protocol_enabled reality; then write_systemd_unit "$REALITY_SERVICE" "$REALITY_CONFIG_FILE" 'sing-box VLESS Reality'; fi
         if is_protocol_enabled hy2; then write_systemd_unit "$HY2_SERVICE" "$HY2_CONFIG_FILE" 'sing-box Hysteria2'; fi
-        systemctl daemon-reload
-        if is_protocol_enabled reality; then systemctl enable --now "$REALITY_SERVICE"; fi
-        if is_protocol_enabled hy2; then systemctl enable --now "$HY2_SERVICE"; fi
-        SERVICE_STATUS='systemd: sing-box-reality / sing-box-hysteria2'
+        systemctl daemon-reload || warn 'systemd daemon-reload 失败。'
+        if is_protocol_enabled reality; then start_service_quiet "$REALITY_SERVICE" "$REALITY_CONFIG_FILE" systemd; fi
+        if is_protocol_enabled hy2; then start_service_quiet "$HY2_SERVICE" "$HY2_CONFIG_FILE" systemd; fi
+        SERVICE_STATUS="systemd: $svcs"
     elif have rc-service; then
         rc-service "$REALITY_SERVICE" stop >/dev/null 2>&1 || true
         rc-service "$HY2_SERVICE" stop >/dev/null 2>&1 || true
@@ -654,18 +892,30 @@ write_services() {
         rc-update del "$HY2_SERVICE" default >/dev/null 2>&1 || true
         rm -f "/etc/init.d/$REALITY_SERVICE" "/etc/init.d/$HY2_SERVICE"
         if is_protocol_enabled reality; then
-            write_openrc_service "$REALITY_SERVICE" "$REALITY_CONFIG_FILE"; rc-update add "$REALITY_SERVICE" default >/dev/null 2>&1 || true
-            rc-service "$REALITY_SERVICE" restart || rc-service "$REALITY_SERVICE" start
+            write_openrc_service "$REALITY_SERVICE" "$REALITY_CONFIG_FILE"
+            start_service_quiet "$REALITY_SERVICE" "$REALITY_CONFIG_FILE" openrc
         else rm -f "/etc/init.d/$REALITY_SERVICE"; fi
         if is_protocol_enabled hy2; then
-            write_openrc_service "$HY2_SERVICE" "$HY2_CONFIG_FILE"; rc-update add "$HY2_SERVICE" default >/dev/null 2>&1 || true
-            rc-service "$HY2_SERVICE" restart || rc-service "$HY2_SERVICE" start
+            write_openrc_service "$HY2_SERVICE" "$HY2_CONFIG_FILE"
+            start_service_quiet "$HY2_SERVICE" "$HY2_CONFIG_FILE" openrc
         else rm -f "/etc/init.d/$HY2_SERVICE"; fi
-        SERVICE_STATUS='OpenRC: sing-box-reality / sing-box-hysteria2'
+        SERVICE_STATUS="OpenRC: $svcs"
     else
         warn '未检测到 systemd/OpenRC，配置已生成但未自动启动。'
         SERVICE_STATUS='请手动运行 sing-box run -c /etc/sing-box/config-*.json'
     fi
+    return 0
+}
+verify_services() {
+    # 安装收尾自检：应运行的服务是否真的在跑
+    if ! have systemctl && ! have rc-service; then return 0; fi
+    if is_protocol_enabled reality && service_exists "$REALITY_SERVICE"; then
+        [ "$(service_status "$REALITY_SERVICE")" = active ] || warn "Reality 服务未运行，请运行 singbox 在菜单 3 中查看，或执行 journalctl -u $REALITY_SERVICE。"
+    fi
+    if is_protocol_enabled hy2 && service_exists "$HY2_SERVICE"; then
+        [ "$(service_status "$HY2_SERVICE")" = active ] || warn "Hysteria2 服务未运行，请运行 singbox 在菜单 3 中查看，或检查 /var/log/$HY2_SERVICE.err。"
+    fi
+    return 0
 }
 write_state() {
     cat > "$STATE_FILE" <<EOF
@@ -676,6 +926,7 @@ HY2_PORT=$HY2_PORT
 CERT_MODE=$CERT_MODE
 CERT_DOMAIN=$CERT_DOMAIN
 CERT_HTTP_PORT=$CERT_HTTP_PORT
+REALITY_SNI=$REALITY_SNI
 PUBLIC_IP=$PUBLIC_IP
 HY2_HOST=$HY2_HOST
 HY2_SNI=$HY2_SNI
@@ -697,7 +948,10 @@ EOF
         printf 'Reality SNI/握手站点: %s\n' "$REALITY_SNI"
         if is_protocol_enabled hy2; then printf 'Hysteria2 SNI: %s\n' "$HY2_SNI"; fi
         printf '证书模式: %s\n' "$CERT_MODE"
-        if [ "$CERT_MODE" != self ]; then printf '证书验证端口: %s\n' "$CERT_HTTP_PORT"; fi
+        if [ "$CERT_MODE" != self ]; then
+            printf '证书验证端口: %s\n' "$CERT_HTTP_PORT"
+            printf '证书自动续期: cron 每日 03:17（%s）\n' "/var/log/sing-box-lite-acme.log"
+        fi
         printf '服务管理: %s\n' "$SERVICE_STATUS"
         printf '\n配置文件:\n'
         if is_protocol_enabled reality; then printf -- '- %s\n' "$REALITY_CONFIG_FILE"; fi
@@ -712,17 +966,25 @@ EOF
     } > "$CONFIG_DIR/install-info.txt"
     chmod 600 "$CONFIG_DIR/install-info.txt"
 }
+write_shortcut() {
+    mkdir -p "$SCRIPT_INSTALL_DIR" /usr/local/bin || return 1
+    cat > "$SHORTCUT_PATH" <<EOF || return 1
+#!/bin/sh
+exec $SCRIPT_INSTALL_PATH "\$@"
+EOF
+    chmod 755 "$SHORTCUT_PATH" || return 1
+}
 install_shortcut() {
     source="$1"
     [ -f "$source" ] || return 0
-    mkdir -p "$SCRIPT_INSTALL_DIR" /usr/local/bin
-    cp -p "$source" "$SCRIPT_INSTALL_PATH"
-    chmod 755 "$SCRIPT_INSTALL_PATH"
-    cat > "$SHORTCUT_PATH" <<'EOF'
-#!/bin/sh
-exec /usr/local/lib/sing-box-lite/install-singbox-lite.sh "$@"
-EOF
-    chmod 755 "$SHORTCUT_PATH"
+    mkdir -p "$SCRIPT_INSTALL_DIR" /usr/local/bin || { warn "无法创建目录：$SCRIPT_INSTALL_DIR"; return 1; }
+    # 脚本本身就是持久化路径（例如通过 singbox 快捷命令运行）时跳过复制，避免 cp 复制同一文件报错
+    if ! cmp -s "$source" "$SCRIPT_INSTALL_PATH" 2>/dev/null; then
+        cp -p "$source" "$SCRIPT_INSTALL_PATH" || { warn "无法写入：$SCRIPT_INSTALL_PATH"; return 1; }
+    fi
+    chmod 755 "$SCRIPT_INSTALL_PATH" || true
+    write_shortcut || { warn "无法写入：$SHORTCUT_PATH"; return 1; }
+    return 0
 }
 current_script_path() {
     case "$0" in
@@ -730,55 +992,154 @@ current_script_path() {
         *) [ -f "$PWD/install-singbox-lite.sh" ] && printf '%s' "$PWD/install-singbox-lite.sh" || true ;;
     esac
 }
+# 判断点分数字版本号 $1 >= $2
+version_ge() {
+    [ "$1" = "$2" ] && return 0
+    left="$1"; right="$2"
+    while [ -n "$left" ] || [ -n "$right" ]; do
+        left_part="${left%%.*}"; right_part="${right%%.*}"
+        if [ "$left" = "$left_part" ]; then left=''; else left="${left#*.}"; fi
+        if [ "$right" = "$right_part" ]; then right=''; else right="${right#*.}"; fi
+        case "${left_part}${right_part}" in *[!0-9]*) return 1 ;; esac
+        left_part="${left_part:-0}"; right_part="${right_part:-0}"
+        if [ "$left_part" -gt "$right_part" ]; then return 0; fi
+        if [ "$left_part" -lt "$right_part" ]; then return 1; fi
+    done
+    return 0
+}
 upgrade_script() {
     [ "$(id -u)" -eq 0 ] || die '升级脚本请使用 root 运行。'
     tmp_update="$(mktemp)"
     download_file "$REMOTE_SCRIPT_URL" "$tmp_update" || { rm -f "$tmp_update"; die '无法下载最新脚本。'; }
     remote_version="$(sed -n 's/^SCRIPT_VERSION="\([0-9][0-9.]*\)".*/\1/p' "$tmp_update" | head -n 1)"
     [ -n "$remote_version" ] || { rm -f "$tmp_update"; die '远程脚本版本无效。'; }
-    if [ "$remote_version" = "$SCRIPT_VERSION" ]; then rm -f "$tmp_update"; log "脚本已是最新版本 $SCRIPT_VERSION。"; return 0; fi
-    if [ -f "$SCRIPT_INSTALL_PATH" ]; then cp -p "$SCRIPT_INSTALL_PATH" "$SCRIPT_INSTALL_PATH.bak.$SCRIPT_VERSION"; fi
+    if version_ge "$SCRIPT_VERSION" "$remote_version" && [ "${FORCE_SCRIPT_UPDATE:-0}" != 1 ]; then
+        rm -f "$tmp_update"
+        log "本地脚本已是最新（本地 $SCRIPT_VERSION，远程 $remote_version）；如需强制更新请设置 FORCE_SCRIPT_UPDATE=1。"
+        return 0
+    fi
+    if [ -f "$SCRIPT_INSTALL_PATH" ] && ! cmp -s "$SCRIPT_INSTALL_PATH" "$tmp_update"; then
+        cp -p "$SCRIPT_INSTALL_PATH" "$SCRIPT_INSTALL_PATH.bak.$SCRIPT_VERSION"
+        warn "已备份旧脚本：$SCRIPT_INSTALL_PATH.bak.$SCRIPT_VERSION"
+    fi
     mkdir -p "$SCRIPT_INSTALL_DIR"; cp "$tmp_update" "$SCRIPT_INSTALL_PATH"; chmod 755 "$SCRIPT_INSTALL_PATH"; rm -f "$tmp_update"
-    cat > "$SHORTCUT_PATH" <<'EOF'
-#!/bin/sh
-exec /usr/local/lib/sing-box-lite/install-singbox-lite.sh "$@"
-EOF
-    chmod 755 "$SHORTCUT_PATH"
+    write_shortcut || warn "无法写入快捷命令：$SHORTCUT_PATH"
     log "脚本已更新到版本 $remote_version。快捷命令：singbox"
 }
 prompt_port() {
     label="$1"; default="$2"; current="$3"
-    if [ -n "$current" ]; then
-        printf '%s（回车保持当前 %s）：' "$label" "$current" >&2
-    else
-        printf '%s（回车使用默认 %s）：' "$label" "$default" >&2
-    fi
-    read -r value || value=''
-    [ -n "$value" ] || value="${current:-$default}"
-    printf '%s' "$value"
+    while :; do
+        if [ -n "$current" ]; then
+            printf '%s（回车保持当前 %s）：' "$label" "$current" >&2
+        else
+            printf '%s（回车使用默认 %s）：' "$label" "$default" >&2
+        fi
+        read -r value || value=''
+        [ -n "$value" ] || value="${current:-$default}"
+        if is_valid_port "$value"; then printf '%s' "$value"; return 0; fi
+        warn "无效端口「$value」，请输入 1-65535 的数字。"
+        current=''
+    done
 }
 prompt_install_options() {
-    printf '\n安装协议：\n  1) Reality + Hysteria2（推荐）\n  2) 仅 Reality\n  3) 仅 Hysteria2\n请选择：'
-    read -r protocol_choice || protocol_choice=1
-    case "$protocol_choice" in 1) INSTALL_MODE=both ;; 2) INSTALL_MODE=reality ;; 3) INSTALL_MODE=hy2 ;; *) die '无效协议选项。' ;; esac
+    # 自定义安装：从状态文件回填上次使用的端口与证书设置
+    load_state || true
+    while :; do
+        printf '\n安装协议：\n  1) Reality + Hysteria2（推荐）\n  2) 仅 Reality\n  3) 仅 Hysteria2\n请选择（回车使用 1）：' >&2
+        read -r protocol_choice || protocol_choice=''
+        [ -n "$protocol_choice" ] || protocol_choice=1
+        case "$protocol_choice" in
+            1) INSTALL_MODE=both; break ;;
+            2) INSTALL_MODE=reality; break ;;
+            3) INSTALL_MODE=hy2; break ;;
+            *) warn '无效选项，请输入 1-3。' ;;
+        esac
+    done
     if is_protocol_enabled reality; then
         REALITY_PORT="$(prompt_port 'Reality TCP 端口' "$DEFAULT_REALITY_PORT" "$REALITY_PORT")"
-        printf 'Reality 握手域名（默认 %s）：' "$REALITY_SNI"; read -r value || value=''; [ -n "$value" ] && REALITY_SNI="$value"
-    else REALITY_PORT=''; fi
+        while :; do
+            printf '\nReality 握手域名：\n  1) %s（默认）\n  2) %s\n  3) 自定义域名\n请选择（回车保持当前 %s）：\n' \
+                "$DEFAULT_REALITY_SNI" "$REALITY_SNI_ALT" "$REALITY_SNI" >&2
+            read -r value || value=''
+            case "$value" in
+                '') break ;;
+                1) REALITY_SNI="$DEFAULT_REALITY_SNI"; break ;;
+                2) REALITY_SNI="$REALITY_SNI_ALT"; break ;;
+                3)
+                    while :; do
+                        printf '自定义握手域名（回车使用 %s）：' "$REALITY_SNI" >&2
+                        read -r candidate || candidate=''
+                        candidate="${candidate:-$REALITY_SNI}"
+                        if validate_domain "$candidate"; then REALITY_SNI="$candidate"; break; fi
+                        warn "域名格式无效：${candidate:-（空）}"
+                    done
+                    break ;;
+                *)
+                    # 单个字符按无效菜单项处理，其余按域名校验（也允许直接输入域名）
+                    case "$value" in
+                        ?) warn '无效选项，请输入 1-3，或直接输入域名。' ;;
+                        *)
+                            if validate_domain "$value"; then REALITY_SNI="$value"; break; fi
+                            warn "域名格式无效：$value" ;;
+                    esac
+                    ;;
+            esac
+        done
+    else
+        REALITY_PORT=''
+    fi
     if is_protocol_enabled hy2; then
         HY2_PORT="$(prompt_port 'Hysteria2 UDP 端口' "$DEFAULT_HY2_PORT" "$HY2_PORT")"
-        printf '\nHysteria2 证书：\n  1) 自签名证书（无需域名）\n  2) 自动申请域名证书\n  3) 自动申请 IP 证书\n请选择（回车使用默认 1）：'
-        read -r cert_choice || cert_choice=1
-        case "$cert_choice" in
-            1|'') CERT_MODE=self ;;
-            2) CERT_MODE=domain; printf '证书域名：'; read -r CERT_DOMAIN; printf 'ACME 账户邮箱（可留空）：'; read -r CERT_EMAIL || CERT_EMAIL=''; CERT_HTTP_PORT="$(prompt_port 'HTTP 验证端口' "$DEFAULT_ACME_HTTP_PORT" "$CERT_HTTP_PORT")" ;;
-            3) CERT_MODE=ip; printf 'ACME 账户邮箱（可留空）：'; read -r CERT_EMAIL || CERT_EMAIL=''; CERT_HTTP_PORT="$(prompt_port 'HTTP 验证端口' "$DEFAULT_ACME_HTTP_PORT" "$CERT_HTTP_PORT")" ;;
-            *) die '无效证书选项。' ;;
-        esac
-    else HY2_PORT=''; CERT_MODE=self; CERT_DOMAIN=''; CERT_EMAIL=''; fi
+        default_cert_choice=1
+        case "$CERT_MODE" in domain) default_cert_choice=2 ;; ip) default_cert_choice=3 ;; esac
+        while :; do
+            printf '\nHysteria2 证书：\n  1) 自签名证书（无需域名）\n  2) 自动申请域名证书\n  3) 自动申请 IP 证书\n请选择（回车使用 %s）：' "$default_cert_choice" >&2
+            read -r cert_choice || cert_choice=''
+            [ -n "$cert_choice" ] || cert_choice="$default_cert_choice"
+            case "$cert_choice" in
+                1) CERT_MODE=self; CERT_DOMAIN=''; break ;;
+                2)
+                    CERT_MODE=domain
+                    while :; do
+                        if [ -n "$CERT_DOMAIN" ]; then
+                            printf '证书域名（回车保持 %s）：' "$CERT_DOMAIN" >&2
+                        else
+                            printf '证书域名：' >&2
+                        fi
+                        read -r value || value=''
+                        candidate="${value:-$CERT_DOMAIN}"
+                        if validate_domain "$candidate"; then CERT_DOMAIN="$candidate"; break; fi
+                        warn "域名格式无效：${candidate:-（空）}"
+                    done
+                    printf 'ACME 账户邮箱（可留空）：' >&2; read -r CERT_EMAIL || CERT_EMAIL=''
+                    CERT_HTTP_PORT="$(prompt_port 'HTTP 验证端口' "$DEFAULT_ACME_HTTP_PORT" "$CERT_HTTP_PORT")"
+                    break ;;
+                3)
+                    CERT_MODE=ip
+                    printf 'ACME 账户邮箱（可留空）：' >&2; read -r CERT_EMAIL || CERT_EMAIL=''
+                    CERT_HTTP_PORT="$(prompt_port 'HTTP 验证端口' "$DEFAULT_ACME_HTTP_PORT" "$CERT_HTTP_PORT")"
+                    break ;;
+                *) warn '无效选项，请输入 1-3。' ;;
+            esac
+        done
+    else
+        HY2_PORT=''; CERT_MODE=self; CERT_DOMAIN=''; CERT_EMAIL=''
+    fi
+    return 0
 }
 prepare_install() {
     [ "$(id -u)" -eq 0 ] || die '安装请使用 root 运行。'
+    if [ -f "$STATE_FILE" ] && [ -t 0 ]; then
+        old_mode="$(read_state_value INSTALL_MODE)"; old_rp="$(read_state_value REALITY_PORT)"; old_hp="$(read_state_value HY2_PORT)"
+        printf '\n%s检测到已有安装%s（模式 %s，Reality TCP %s，Hysteria2 UDP %s）。\n重新安装会重新生成密钥、证书与节点链接，并覆盖现有配置。\n是否继续？[y/N]：' \
+            "$C_YELLOW" "$C_RESET" "${old_mode:-both}" "${old_rp:-默认}" "${old_hp:-默认}" >&2
+        read -r confirm_install || confirm_install=''
+        case "$confirm_install" in
+            y|Y|yes|YES|是) ;;
+            *) log '已取消安装。'; return 0 ;;
+        esac
+    fi
+    INSTALL_STARTED=1
     if is_protocol_enabled reality; then [ -n "$REALITY_PORT" ] || REALITY_PORT="$DEFAULT_REALITY_PORT"; validate_port "$REALITY_PORT" 'Reality TCP 端口'; fi
     if is_protocol_enabled hy2; then [ -n "$HY2_PORT" ] || HY2_PORT="$DEFAULT_HY2_PORT"; validate_port "$HY2_PORT" 'Hysteria2 UDP 端口'; fi
     if is_protocol_enabled reality && is_protocol_enabled hy2 && [ "$REALITY_PORT" = "$HY2_PORT" ]; then die 'Reality TCP 和 Hysteria2 UDP 不能使用同一个端口。'; fi
@@ -797,7 +1158,7 @@ prepare_install() {
         fi
         die '无法获取公网 IP，请设置 PUBLIC_IP 后重试。'
     fi
-    # 节点地区名称为可选环境变量；未设置时使用空名称，不阻断安装。
+    # 节点地区名称为可选环境变量；未设置时使用公网地址作为节点名，不阻断安装。
     HY2_HOST="$PUBLIC_IP"
     mkdir -p "$CONFIG_DIR" "$CLIENT_DIR" /var/lib/sing-box; chmod 700 "$CONFIG_DIR" "$CLIENT_DIR"
     backup_file "$CONFIG_FILE"; backup_file "$REALITY_CONFIG_FILE"; backup_file "$HY2_CONFIG_FILE"
@@ -818,10 +1179,14 @@ prepare_install() {
     "$SING_BOX" check -c "$CONFIG_FILE" >/dev/null || die "配置校验失败：$CONFIG_FILE"
     if is_protocol_enabled reality; then "$SING_BOX" check -c "$REALITY_CONFIG_FILE" >/dev/null || die 'Reality 配置校验失败。'; fi
     if is_protocol_enabled hy2; then "$SING_BOX" check -c "$HY2_CONFIG_FILE" >/dev/null || die 'Hysteria2 配置校验失败。'; fi
-    write_client_files; write_services; write_state
-    source_path="$(current_script_path)"; [ -n "$source_path" ] && install_shortcut "$source_path" || true
-    view_nodes
-    printf '\n\033[1;32m安装完成\033[0m\n'
+    write_client_files; write_services; verify_services; write_state
+    source_path="$(current_script_path)"
+    if [ -n "$source_path" ]; then
+        install_shortcut "$source_path" || warn '快捷菜单安装失败（需要 root 写入 /usr/local/bin）。'
+    fi
+    INSTALL_OK=1
+    view_nodes || true
+    printf '\n%s安装完成%s\n' "$C_GREEN" "$C_RESET"
     log '快捷菜单：singbox（或 ./singbox）'
     firewall_hint=''
     if is_protocol_enabled reality; then firewall_hint="放行 Reality TCP $REALITY_PORT"; fi
@@ -830,37 +1195,75 @@ prepare_install() {
         firewall_hint="${firewall_hint}放行 Hysteria2 UDP $HY2_PORT"
     fi
     [ -n "$firewall_hint" ] && log "请$firewall_hint。"
+    return 0
 }
-upgrade_all() { upgrade_sing_box; upgrade_script; }
+upgrade_all() {
+    upgrade_sing_box
+    upgrade_script
+    print_ok '升级流程结束'
+}
+print_menu() {
+    box_top
+    box_line "  ${C_GREEN}sing-box-lite${C_RESET}  ${C_YELLOW}v${SCRIPT_VERSION}${C_RESET}"
+    box_mid
+    box_line "  1) 一键快捷安装（Reality + Hysteria2）"
+    box_line "  2) 自定义安装（仅 Reality / 仅 Hysteria2）"
+    box_line "  3) 状态查询及管理"
+    box_line "  4) 节点信息"
+    box_line "  5) 升级脚本与 sing-box"
+    box_line "  6) 完全卸载"
+    box_line "  0) 退出"
+    box_bottom
+    if [ -f "$STATE_FILE" ]; then
+        _mode="$(read_state_value INSTALL_MODE)"; [ -n "$_mode" ] || _mode='both'
+        printf '  %s已安装%s 模式 %s ｜ Reality %s ｜ Hysteria2 %s\n\n' \
+            "$C_DIM" "$C_RESET" "$_mode" "$(service_state_label "$REALITY_SERVICE")" "$(service_state_label "$HY2_SERVICE")"
+    else
+        printf '  %s尚未安装%s：选择 1) 一键快捷安装 开始部署\n\n' "$C_DIM" "$C_RESET"
+    fi
+}
 show_menu() {
+    [ "$(id -u)" -eq 0 ] || die '请使用 root 运行本脚本（安装与服务管理均需要 root 权限）。'
     while :; do
         clear_screen
-        printf '\033[1;36m╔══════════════════════════════════════════════╗\033[0m\n'
-        printf '\033[1;36m║\033[0m       \033[1;32msing-box-lite\033[0m  \033[1;33mv%s\033[0m                                 \033[1;36m║\033[0m\n' "$SCRIPT_VERSION"
-        printf '\033[1;36m╠══════════════════════════════════════════════╣\033[0m\n'
-        printf '\033[1;36m║\033[0m  1) 一键快捷安装（Reality + Hy2）          \033[1;36m║\033[0m\n'
-        printf '\033[1;36m║\033[0m  2) 自定义安装（仅 Reality / 仅 Hy2）      \033[1;36m║\033[0m\n'
-        printf '\033[1;36m║\033[0m  3) 状态查询及管理                         \033[1;36m║\033[0m\n'
-        printf '\033[1;36m║\033[0m  4) 节点信息                               \033[1;36m║\033[0m\n'
-        printf '\033[1;36m║\033[0m  5) 升级脚本与 singbox                     \033[1;36m║\033[0m\n'
-        printf '\033[1;36m║\033[0m  6) 完全卸载                               \033[1;36m║\033[0m\n'
-        printf '\033[1;36m║\033[0m  0) 退出                                   \033[1;36m║\033[0m\n'
-        printf '\033[1;36m╚══════════════════════════════════════════════╝\033[0m\n'
-        printf '请选择操作：'
+        print_menu
+        printf '请选择操作：' >&2
         read -r choice || exit 0
         case "$choice" in
-            1) INSTALL_MODE=both; REALITY_PORT=''; HY2_PORT=''; CERT_MODE=self; prepare_install; pause ;;
-            2) prompt_install_options; prepare_install; pause ;;
-            3) manage_services ;;
-            4) view_nodes; pause ;;
-            5) upgrade_all; pause ;;
-            6) uninstall_singbox; pause ;;
+            1)
+                ( INSTALL_MODE=both; REALITY_PORT=''; HY2_PORT=''; CERT_MODE=self; CERT_DOMAIN=''; CERT_HTTP_PORT=''; prepare_install ) || warn '安装未完成。'
+                pause ;;
+            2)
+                ( prompt_install_options && prepare_install ) || warn '安装未完成。'
+                pause ;;
+            3) manage_services || pause ;;
+            4) view_nodes || true; pause ;;
+            5) ( upgrade_all ) || warn '升级未完成。'; pause ;;
+            6) ( uninstall_singbox ) || warn '卸载未完成。'; pause ;;
             0) exit 0 ;;
             *) warn '无效选项。'; pause ;;
         esac
     done
 }
 
+restore_state_install_defaults() {
+    # 未显式给出的参数回填上次安装的端口、握手域名与证书设置
+    [ -f "$STATE_FILE" ] || return 0
+    if is_protocol_enabled reality; then
+        [ -n "$REALITY_PORT" ] || REALITY_PORT="$(read_state_value REALITY_PORT)"
+        if [ "$REALITY_SNI_FROM_ENV" != 1 ]; then
+            _v="$(read_state_value REALITY_SNI)"; if [ -n "$_v" ]; then REALITY_SNI="$_v"; fi
+        fi
+    fi
+    if is_protocol_enabled hy2; then
+        [ -n "$HY2_PORT" ] || HY2_PORT="$(read_state_value HY2_PORT)"
+        _v="$(read_state_value CERT_MODE)"; [ -n "$_v" ] && CERT_MODE="$_v"
+        _v="$(read_state_value CERT_HTTP_PORT)"; [ -n "$_v" ] && CERT_HTTP_PORT="$_v"
+        CERT_DOMAIN="$(read_state_value CERT_DOMAIN)"
+        if [ "$CERT_MODE" = domain ] && [ -z "$CERT_DOMAIN" ]; then CERT_MODE=self; fi
+    fi
+    return 0
+}
 OS_ID=''; OS_LIKE=''
 if [ -r /etc/os-release ]; then
     # shellcheck disable=SC1091
@@ -868,14 +1271,42 @@ if [ -r /etc/os-release ]; then
     OS_ID="${ID:-}"; OS_LIKE="${ID_LIKE:-}"
 fi
 
-if [ "${1:-}" = '--version' ] || [ "${1:-}" = '-v' ]; then
+usage() {
+    cat <<EOF
+用法：$0 [命令]
+
+命令：
+  install [both|reality|hy2] [Reality端口] [Hy2端口]   安装；无参数时进入交互安装
+  status                                                查看运行状态、监听端口与安装信息
+  manage                                                服务开启 / 关闭 / 重启菜单
+  nodes                                                 查看节点导入链接与客户端配置
+  upgrade                                               升级 sing-box 与本脚本
+  uninstall                                             完全卸载
+  help | --help                                         显示本帮助
+  version | --version                                   显示脚本版本
+  （无参数）                                             进入交互菜单
+
+环境变量：
+  PUBLIC_IP=地址        覆盖公网地址检测结果
+  REALITY_SNI=域名      指定 Reality 握手域名（默认 academy.nvidia.com）
+  REMOTE_SCRIPT_URL=URL 指定脚本升级地址
+  ACME_HTTP_PORT=端口   预填证书 HTTP 验证端口
+  NODE_REGION_EMOJI=X   节点名称前缀（表情，可选）
+  NODE_REGION_CODE=X    节点名称后缀（地区码，可选）
+  FORCE_SCRIPT_UPDATE=1 脚本升级时忽略版本比较，强制覆盖
+  NO_COLOR=1            关闭彩色输出
+EOF
+}
+
+if [ "${1:-}" = '--version' ] || [ "${1:-}" = '-v' ] || [ "${1:-}" = 'version' ]; then
     printf 'sing-box-lite %s\n' "$SCRIPT_VERSION"; exit 0
 fi
 case "${1:-}" in
     install)
         shift
+        mode_explicit=0
         case "${1:-}" in
-            both|reality|hy2) INSTALL_MODE="$1"; shift ;;
+            both|reality|hy2) INSTALL_MODE="$1"; mode_explicit=1; shift ;;
             '') INSTALL_MODE=both ;;
             *[!0-9]*) die '用法：install [both|reality|hy2] [Reality端口] [Hy2端口]' ;;
         esac
@@ -889,14 +1320,20 @@ case "${1:-}" in
             REALITY_PORT="${1:-}"; HY2_PORT="${2:-}"
             [ $# -gt 2 ] && die 'install both 最多接受两个端口：install both <Reality端口> <Hy2端口>'
         fi
+        if [ "$mode_explicit" = 0 ]; then
+            _saved_mode="$(read_state_value INSTALL_MODE)"
+            if [ -n "$_saved_mode" ]; then INSTALL_MODE="$_saved_mode"; fi
+        fi
+        restore_state_install_defaults
         prepare_install ;;
     uninstall|remove) uninstall_singbox ;;
     nodes|node|view|show) view_nodes ;;
     status|state|check) show_status ;;
     manage|service) manage_services ;;
     upgrade|update) upgrade_all ;;
+    help|-h|--help) usage ;;
     '') show_menu ;;
-    *[!0-9]*) die "用法：$0 [install [both|reality|hy2] [Reality端口] [Hy2端口] | status | manage | nodes | upgrade | uninstall]" ;;
-    *) INSTALL_MODE=both; REALITY_PORT="$1"; HY2_PORT="${2:-}"; prepare_install ;;
+    *[!0-9]*) usage >&2; exit 1 ;;
+    *) INSTALL_MODE=both; REALITY_PORT="$1"; HY2_PORT="${2:-}"; restore_state_install_defaults; prepare_install ;;
 esac
 
