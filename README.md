@@ -53,6 +53,7 @@ singbox
 | 变量 | 作用 |
 | --- | --- |
 | `PUBLIC_IP` | 覆盖公网地址检测结果 |
+| `LISTEN_BOTH=1` | 同时监听 IPv4 与 IPv6（双栈，需公网 v4 与 v6 均可用） |
 | `REALITY_SNI` | 指定 Reality 握手域名（默认 `academy.nvidia.com`） |
 | `ACME_HTTP_PORT` | 预填证书 HTTP 验证端口 |
 | `REMOTE_SCRIPT_URL` | 指定脚本升级地址 |
@@ -130,6 +131,7 @@ acme.sh 以 `--no-cron` 方式安装，脚本会另行写入一条每日 `03:17`
 | `/etc/sing-box/clients/links.txt` | 节点导入链接 |
 | `/etc/sing-box/clients/reality.json` | Reality 客户端出站模板 |
 | `/etc/sing-box/clients/hysteria2.json` | Hysteria2 客户端出站模板 |
+| `/etc/sing-box/clients/*-IPv4.json` / `*-IPv6.json` | 双栈模式下另一族地址的客户端模板 |
 | `/etc/sing-box/install-info.txt` | 安装信息和端口记录 |
 | `/etc/sing-box/state.env` | 状态查询使用的安装状态 |
 | `/etc/sing-box/server.crt` | Hysteria2 证书 |
@@ -143,10 +145,12 @@ acme.sh 以 `--no-cron` 方式安装，脚本会另行写入一条每日 `03:17`
 
 安装时脚本会过滤内网和保留地址（包括 LXD 常见的 `fd00::/8`、`fc00::/7`），只使用可路由地址生成节点：
 
-- 同时检测到可用 IPv4 和公网 IPv6：询问节点使用 IPv4 还是 IPv6。
+- 同时检测到可用 IPv4 和公网 IPv6：询问节点使用 IPv4、IPv6，还是**双栈（两者同时监听）**。
+- 双栈模式监听 `::`，同时接受 IPv4 与 IPv6 连接（要求内核 `net.ipv6.bindv6only=0`，脚本会自动校正）；节点链接与客户端配置会为两种地址各生成一份，标签带 `IPv4` / `IPv6` 后缀。
+- 双栈 + IP 证书时，证书只覆盖主地址，另一族地址无法通过证书校验；需要两端都可信请用域名证书。
 - 只有公网 IPv6：自动按 IPv6-only 处理，监听 IPv6 并生成 `[IPv6]` 格式链接。
 - 只有 IPv4：使用 IPv4。
-- IPv4 只是 WARP、NAT 或 LXD 共享出口时，选择 IPv4 需要自行确认端口转发；否则请选择 IPv6。
+- IPv4 只是 WARP、NAT 或 LXD 共享出口时，选择 IPv4 需要自行确认端口转发；否则请选择 IPv6 或双栈。
 - 如果自动检测不准确，可运行前设置 `PUBLIC_IP=公网地址` 覆盖检测结果。
 
 IPv6 证书申请会自动使用对应的 IPv6 参数。

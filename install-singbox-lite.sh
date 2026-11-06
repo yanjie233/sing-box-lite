@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: VLESS-Reality + Hysteria2 one-click installer and manager
-SCRIPT_VERSION="3.3.0"
+SCRIPT_VERSION="3.4.0"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 set -eu
 CONFIG_DIR="/etc/sing-box"
@@ -31,6 +31,7 @@ DEFAULT_ACME_HTTP_PORT="80"
 INSTALL_MODE="both"
 LISTEN_IPV6="0"
 V6_ONLY="0"
+LISTEN_BOTH="${LISTEN_BOTH:-0}"
 REALITY_PORT=""
 HY2_PORT=""
 CERT_MODE="self"
@@ -39,6 +40,8 @@ CERT_EMAIL=""
 CERT_HTTP_PORT="${ACME_HTTP_PORT:-}"
 HY2_HOST=""
 PUBLIC_IP=""
+PUBLIC_IP_V4=""
+PUBLIC_IP_V6=""
 IP_FAMILY=""
 SING_BOX_PATH="/usr/local/bin/sing-box"
 
@@ -228,7 +231,9 @@ show_status_summary() {
     mode="$(read_state_value INSTALL_MODE)"; [ -n "$mode" ] || mode="$INSTALL_MODE"
     reality_port="$(read_state_value REALITY_PORT)"; hy2_port="$(read_state_value HY2_PORT)"
     listen_v6="$(read_state_value LISTEN_IPV6)"; v6only="$(read_state_value V6_ONLY)"
+    listen_both="$(read_state_value LISTEN_BOTH)"
     if [ "$v6only" = 1 ]; then net='IPv6-only'
+    elif [ "$listen_both" = 1 ]; then net='双栈（IPv4 + IPv6）'
     elif [ "$listen_v6" = 1 ]; then net='双栈（监听 IPv6）'
     else net='IPv4'
     fi
@@ -517,6 +522,11 @@ is_warp_v4_egress() {
 get_public_ip() {
     case "$IP_FAMILY" in
         6) get_public_ipv6 ;;
+        46)
+            # 双栈：主地址优先本机公网 IPv4，没有则退回公网 IPv6
+            v4="$(get_local_ipv4)"
+            if [ -n "$v4" ] && ! is_private_ipv4 "$v4"; then printf '%s' "$v4"; else get_public_ipv6; fi
+            ;;
         4)
             v4="$(get_local_ipv4)"
             if [ -n "$v4" ] && ! is_private_ipv4 "$v4"; then printf '%s' "$v4"; else get_external_ipv4; fi
@@ -535,11 +545,13 @@ prompt_ip_family() {
         case "$PUBLIC_IP" in
             *:*)
                 is_private_ipv6 "$PUBLIC_IP" && die "PUBLIC_IP 不是公网 IPv6：$PUBLIC_IP"
-                IP_FAMILY=6; V6_ONLY=1; LISTEN_IPV6=1
+                IP_FAMILY=6; V6_ONLY=1; LISTEN_IPV6=1; LISTEN_BOTH=0
+                PUBLIC_IP_V6="$PUBLIC_IP"
                 ;;
             *)
                 is_private_ipv4 "$PUBLIC_IP" && die "PUBLIC_IP 不是公网 IPv4：$PUBLIC_IP"
-                IP_FAMILY=4; V6_ONLY=0; LISTEN_IPV6=0
+                IP_FAMILY=4; V6_ONLY=0; LISTEN_IPV6=0; LISTEN_BOTH=0
+                PUBLIC_IP_V4="$PUBLIC_IP"
                 ;;
         esac
         return 0
@@ -558,45 +570,64 @@ prompt_ip_family() {
     if [ -n "$public_v4" ] && [ -n "$public_v6" ]; then
         native_v4=0
         if has_native_ipv4; then native_v4=1; fi
-        if [ "$native_v4" = 1 ]; then
+        if [ "$LISTEN_BOTH" = 1 ]; then
+            log 'LISTEN_BOTH=1：已启用双栈监听，跳过地址选择。'
+        elif [ "$native_v4" = 1 ]; then
             default_choice=1
-            printf '\n检测到可用 IPv4 和公网 IPv6，请选择节点地址：\n  1) IPv4（默认）\n  2) IPv6\n请选择：' >&2
+            printf '\n检测到可用 IPv4 和公网 IPv6，请选择节点地址：\n  1) IPv4（默认，仅监听 IPv4）\n  2) IPv6（仅监听 IPv6）\n  3) 双栈（IPv4 + IPv6 同时监听）\n请选择：' >&2
         else
-            default_choice=2
-            printf '\n检测到 IPv4 出口和公网 IPv6，请选择节点地址：\n  1) IPv4（需要端口转发）\n  2) IPv6（默认）\n请选择：' >&2
+            default_choice=3
+            printf '\n检测到 IPv4 出口和公网 IPv6，请选择节点地址：\n  1) IPv4（需要端口转发，仅监听 IPv4）\n  2) IPv6（仅监听 IPv6）\n  3) 双栈（IPv4 + IPv6 同时监听，默认）\n请选择：' >&2
         fi
         while :; do
-            read -r ip_choice || ip_choice=''
-            [ -n "$ip_choice" ] || ip_choice="$default_choice"
+            if [ "$LISTEN_BOTH" = 1 ]; then
+                ip_choice=3
+            else
+                read -r ip_choice || ip_choice=''
+                [ -n "$ip_choice" ] || ip_choice="$default_choice"
+            fi
             case "$ip_choice" in
                 1)
-                    PUBLIC_IP="$public_v4"; IP_FAMILY=4; V6_ONLY=0; LISTEN_IPV6=0
+                    PUBLIC_IP="$public_v4"; PUBLIC_IP_V4="$public_v4"
+                    IP_FAMILY=4; V6_ONLY=0; LISTEN_IPV6=0; LISTEN_BOTH=0
                     if [ "$native_v4" = 0 ]; then
                         warn '当前 IPv4 不是本机网卡地址，可能是 WARP/NAT/LXD 共享出口；选择 IPv4 前请确认端口转发。'
                     fi
                     break
                     ;;
                 2)
-                    PUBLIC_IP="$public_v6"; IP_FAMILY=6; V6_ONLY=1; LISTEN_IPV6=1
+                    PUBLIC_IP="$public_v6"; PUBLIC_IP_V6="$public_v6"
+                    IP_FAMILY=6; V6_ONLY=1; LISTEN_IPV6=1; LISTEN_BOTH=0
                     break
                     ;;
-                *) warn '无效选项，请输入 1 或 2。' ;;
+                3)
+                    # 双栈：监听 "::"（bindv6only=0 时同时接受 IPv4）。
+                    # 主地址只用于节点名/IP 证书：本机有公网 v4 时取 v4，否则取 v6。
+                    if [ "$native_v4" = 1 ]; then PUBLIC_IP="$public_v4"; else PUBLIC_IP="$public_v6"; fi
+                    PUBLIC_IP_V4="$public_v4"; PUBLIC_IP_V6="$public_v6"
+                    IP_FAMILY=46; V6_ONLY=0; LISTEN_IPV6=1; LISTEN_BOTH=1
+                    log "已选择双栈：IPv4 $public_v4 与 IPv6 $public_v6 同时监听。"
+                    break
+                    ;;
+                *) warn '无效选项，请输入 1、2 或 3。' ;;
             esac
         done
     elif [ -n "$public_v4" ]; then
-        PUBLIC_IP="$public_v4"; IP_FAMILY=4; V6_ONLY=0; LISTEN_IPV6=0
+        PUBLIC_IP="$public_v4"; PUBLIC_IP_V4="$public_v4"
+        IP_FAMILY=4; V6_ONLY=0; LISTEN_IPV6=0; LISTEN_BOTH=0
         if ! has_native_ipv4; then
             warn '检测到 IPv4 出口但不是本机网卡地址，可能需要额外端口转发。'
         fi
     elif [ -n "$public_v6" ]; then
-        PUBLIC_IP="$public_v6"; IP_FAMILY=6; V6_ONLY=1; LISTEN_IPV6=1
+        PUBLIC_IP="$public_v6"; PUBLIC_IP_V6="$public_v6"
+        IP_FAMILY=6; V6_ONLY=1; LISTEN_IPV6=1; LISTEN_BOTH=0
         log '仅检测到公网 IPv6，将按 IPv6-only 处理。'
     else
         if [ "$HAS_IPV6" = 1 ]; then
             warn '检测到 IPv6，但地址属于内网/保留范围（例如 fd00::/8），不会生成 IPv6 节点。'
         fi
         IP_FAMILY=''
-        V6_ONLY=0; LISTEN_IPV6=0
+        V6_ONLY=0; LISTEN_IPV6=0; LISTEN_BOTH=0
     fi
 
     if [ "$IP_FAMILY" = 6 ]; then
@@ -697,6 +728,9 @@ issue_acme_certificate() {
     fi
     reload_cmd="systemctl restart $HY2_SERVICE 2>/dev/null || rc-service $HY2_SERVICE restart 2>/dev/null || true"
     log "申请 $CERT_MODE 证书，验证端口：$CERT_HTTP_PORT"
+    if [ "$LISTEN_BOTH" = 1 ] && [ "$CERT_MODE" = ip ]; then
+        warn "双栈 + IP 证书：证书只覆盖主地址 $PUBLIC_IP，另一族地址无法通过证书校验；如需两端都可信请改用域名证书。"
+    fi
     if [ "$CERT_MODE" = domain ]; then
         validate_domain "$CERT_DOMAIN" || die "证书域名格式无效：$CERT_DOMAIN"
         listen_v6_flag=''
@@ -724,7 +758,32 @@ backup_file() {
 }
 
 get_listen_addr() {
-    if [ "$V6_ONLY" = 1 ] || [ "$LISTEN_IPV6" = 1 ]; then printf '%s' '::'; else printf '%s' '0.0.0.0'; fi
+    # 双栈 / 纯 IPv6 都监听 "::"：内核 bindv6only=0（Linux 默认）时同一 socket 同时接受
+    # IPv4 与 IPv6 连接，可用 inetd 式双栈覆盖，不必开两个监听（UDP 同端口两个监听会冲突）。
+    if [ "$LISTEN_BOTH" = 1 ] || [ "$V6_ONLY" = 1 ] || [ "$LISTEN_IPV6" = 1 ]; then printf '%s' '::'; else printf '%s' '0.0.0.0'; fi
+}
+ensure_dual_stack() {
+    # 确保 "::" 监听真的能吃 IPv4：bindv6only=0 才能双栈；disable_ipv6=1 时 IPv6 侧根本不可用。
+    [ "$LISTEN_BOTH" = 1 ] || return 0
+    if [ ! -r /proc/sys/net/ipv6/bindv6only ]; then
+        warn '当前内核不支持 IPv6，双栈监听将退化为仅 IPv4。'
+        LISTEN_BOTH=0; LISTEN_IPV6=0; V6_ONLY=0
+        return 0
+    fi
+    if [ "$(cat /proc/sys/net/ipv6/bindv6only 2>/dev/null || printf '0')" = 1 ]; then
+        log '检测到 net.ipv6.bindv6only=1，切换为 0 以便 "::" 同时接受 IPv4。'
+        if sysctl -w net.ipv6.bindv6only=0 >/dev/null 2>&1; then
+            if [ -d /etc/sysctl.d ]; then
+                printf 'net.ipv6.bindv6only=0\n' > /etc/sysctl.d/99-sing-box-lite.conf 2>/dev/null || true
+            fi
+        else
+            warn '无法设置 net.ipv6.bindv6only=0，双栈可能只监听 IPv6。请手动执行：sysctl -w net.ipv6.bindv6only=0'
+        fi
+    fi
+    if [ -r /proc/sys/net/ipv6/conf/all/disable_ipv6 ] && [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)" = 1 ]; then
+        warn '检测到 IPv6 已在内核层禁用（disable_ipv6=1），双栈将只有 IPv4 可用。'
+    fi
+    return 0
 }
 write_reality_inbound() {
     cat <<EOF
@@ -784,7 +843,17 @@ EOF
 write_client_files() {
     URL_HOST="$PUBLIC_IP"; case "$URL_HOST" in *:*) URL_HOST="[$URL_HOST]" ;; esac
     HOST_ADDR="${HY2_HOST:-$PUBLIC_IP}"; case "$HOST_ADDR" in *:*) HOST_ADDR="[$HOST_ADDR]" ;; esac
-    rm -f "$CLIENT_DIR/reality.json" "$CLIENT_DIR/hysteria2.json" "$CLIENT_DIR/links.txt"
+    # 双栈：为“另一族”地址额外生成一份客户端配置与链接，两种地址都能直接连
+    ALT_IP=''; ALT_HOST=''; ALT_TAG=''
+    if [ "$LISTEN_BOTH" = 1 ]; then
+        case "$PUBLIC_IP" in
+            *:*) ALT_IP="$PUBLIC_IP_V4"; ALT_TAG='IPv4' ;;
+            *) ALT_IP="$PUBLIC_IP_V6"; ALT_TAG='IPv6' ;;
+        esac
+        [ "$ALT_IP" = "$PUBLIC_IP" ] && ALT_IP=''
+        ALT_HOST="$ALT_IP"; case "$ALT_HOST" in *:*) ALT_HOST="[$ALT_HOST]" ;; esac
+    fi
+    rm -f "$CLIENT_DIR"/reality.json "$CLIENT_DIR"/hysteria2.json "$CLIENT_DIR"/reality-*.json "$CLIENT_DIR"/hysteria2-*.json "$CLIENT_DIR"/links.txt
     : > "$CLIENT_DIR/links.txt"
     node_name="${NODE_REGION_EMOJI}${NODE_REGION_CODE}"
     [ -n "$node_name" ] || node_name="$PUBLIC_IP"
@@ -811,6 +880,30 @@ EOF
         HY2_LINK="hysteria2://${HY2_PASSWORD}@${HOST_ADDR}:${HY2_PORT}/?${query}#${node_name}-Hy2"
         printf '# %s-Hy2（%s）\n%s\n' "$node_name" "$note" "$HY2_LINK" >> "$CLIENT_DIR/links.txt"
         chmod 600 "$CLIENT_DIR/hysteria2.json"
+    fi
+    if [ -n "$ALT_HOST" ]; then
+        if is_protocol_enabled reality; then
+            cat > "$CLIENT_DIR/reality-$ALT_TAG.json" <<EOF
+{
+  "log": {"level": "warn"},
+  "outbounds": [{"type": "vless", "tag": "proxy", "server": "$ALT_IP", "server_port": $REALITY_PORT, "uuid": "$UUID", "flow": "xtls-rprx-vision", "tls": {"enabled": true, "server_name": "$REALITY_SNI", "utls": {"enabled": true, "fingerprint": "$REALITY_FINGERPRINT"}, "reality": {"enabled": true, "public_key": "$REALITY_PUBLIC_KEY", "short_id": ""}}}]
+}
+EOF
+            REALITY_ALT_LINK="vless://${UUID}@${ALT_HOST}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SNI}&fp=${REALITY_FINGERPRINT}&pbk=${REALITY_PUBLIC_KEY}&type=tcp&headerType=none#${node_name}-Vless-${ALT_TAG}"
+            printf '# %s-Vless-%s\n%s\n\n' "$node_name" "$ALT_TAG" "$REALITY_ALT_LINK" >> "$CLIENT_DIR/links.txt"
+            chmod 600 "$CLIENT_DIR/reality-$ALT_TAG.json"
+        fi
+        if is_protocol_enabled hy2; then
+            cat > "$CLIENT_DIR/hysteria2-$ALT_TAG.json" <<EOF
+{
+  "log": {"level": "warn"},
+  "outbounds": [{"type": "hysteria2", "tag": "proxy", "server": "$ALT_IP", "server_port": $HY2_PORT, "password": "$HY2_PASSWORD", "tls": {"enabled": true, "server_name": "$HY2_SNI", "insecure": $insecure}}]
+}
+EOF
+            HY2_ALT_LINK="hysteria2://${HY2_PASSWORD}@${ALT_HOST}:${HY2_PORT}/?${query}#${node_name}-Hy2-${ALT_TAG}"
+            printf '# %s-Hy2-%s（%s）\n%s\n\n' "$node_name" "$ALT_TAG" "$note" "$HY2_ALT_LINK" >> "$CLIENT_DIR/links.txt"
+            chmod 600 "$CLIENT_DIR/hysteria2-$ALT_TAG.json"
+        fi
     fi
     chmod 600 "$CLIENT_DIR/links.txt"
 }
@@ -932,6 +1025,9 @@ HY2_HOST=$HY2_HOST
 HY2_SNI=$HY2_SNI
 LISTEN_IPV6=$LISTEN_IPV6
 V6_ONLY=$V6_ONLY
+LISTEN_BOTH=$LISTEN_BOTH
+PUBLIC_IP_V4=$PUBLIC_IP_V4
+PUBLIC_IP_V6=$PUBLIC_IP_V6
 IP_FAMILY=$IP_FAMILY
 EOF
     chmod 600 "$STATE_FILE"
@@ -941,7 +1037,11 @@ EOF
         printf '安装模式: %s\n' "$INSTALL_MODE"
         printf '服务器地址: %s\n' "$PUBLIC_IP"
         if [ "$V6_ONLY" = 1 ]; then printf '网络类型: IPv6-only\n'; else
-            if [ "$LISTEN_IPV6" = 1 ]; then printf '网络类型: 双栈（IPv4 + IPv6）\n'; else printf '网络类型: IPv4\n'; fi
+            if [ "$LISTEN_BOTH" = 1 ]; then printf '网络类型: 双栈（IPv4 + IPv6 同时监听）\n'
+            elif [ "$LISTEN_IPV6" = 1 ]; then printf '网络类型: 双栈（监听 IPv6）\n'; else printf '网络类型: IPv4\n'; fi
+        fi
+        if [ "$LISTEN_BOTH" = 1 ]; then
+            printf '监听地址: ::（IPv4 %s / IPv6 %s）\n' "${PUBLIC_IP_V4:-—}" "${PUBLIC_IP_V6:-—}"
         fi
         if is_protocol_enabled reality; then printf 'Reality TCP 端口: %s\n' "$REALITY_PORT"; fi
         if is_protocol_enabled hy2; then printf 'Hysteria2 UDP 端口: %s\n' "$HY2_PORT"; fi
@@ -1149,8 +1249,9 @@ prepare_install() {
     fi
     if [ "$CERT_MODE" = domain ]; then validate_domain "$CERT_DOMAIN" || die "证书域名格式无效：$CERT_DOMAIN"; fi
     install_base_packages; install_sing_box; SING_BOX="$(command -v sing-box)"; SING_BOX_PATH="$SING_BOX"
-    # 选择节点地址族；同时存在 IPv4 和公网 IPv6 时交给用户选择。
+    # 选择节点地址族；同时存在 IPv4 和公网 IPv6 时交给用户选择（可选双栈同时监听）。
     prompt_ip_family
+    ensure_dual_stack
     PUBLIC_IP="${PUBLIC_IP:-$(get_public_ip)}"
     if [ -z "$PUBLIC_IP" ]; then
         if [ "$V6_ONLY" = 1 ]; then
@@ -1288,6 +1389,7 @@ usage() {
 
 环境变量：
   PUBLIC_IP=地址        覆盖公网地址检测结果
+  LISTEN_BOTH=1         同时监听 IPv4 与 IPv6（双栈，需公网 v4 与 v6 均可用）
   REALITY_SNI=域名      指定 Reality 握手域名（默认 academy.nvidia.com）
   REMOTE_SCRIPT_URL=URL 指定脚本升级地址
   ACME_HTTP_PORT=端口   预填证书 HTTP 验证端口
