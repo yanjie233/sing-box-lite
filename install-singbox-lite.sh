@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: VLESS-Reality + Hysteria2 one-click installer and manager
-SCRIPT_VERSION="3.4.0"
+SCRIPT_VERSION="3.4.1"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 set -eu
 CONFIG_DIR="/etc/sing-box"
@@ -678,10 +678,18 @@ make_self_signed_cert() {
 install_acme_sh() {
     ACME_HOME="${ACME_HOME:-/root/.acme.sh}"
     if [ -x "$ACME_HOME/acme.sh" ]; then return 0; fi
-    tmp_acme="$(mktemp)"
-    download_file 'https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh' "$tmp_acme" || { rm -f "$tmp_acme"; die '无法下载 acme.sh。'; }
-    if [ -n "$CERT_EMAIL" ]; then sh "$tmp_acme" --install --home "$ACME_HOME" --no-cron --accountemail "$CERT_EMAIL"; else sh "$tmp_acme" --install --home "$ACME_HOME" --no-cron; fi
-    rm -f "$tmp_acme"
+    # acme.sh 的 --install 内部执行的是 `cp "$PROJECT_ENTRY" "$LE_WORKING_DIR/"`
+    # 即复制「当前工作目录下的 ./acme.sh」。把脚本下载成 mktemp 临时文件再直接执行时，
+    # CWD 里根本不存在 acme.sh，于是必然报 "Installation failed, cannot copy acme.sh"。
+    # 因此下载成独立目录里的 acme.sh，并 cd 进去执行。
+    tmp_acme_dir="$(mktemp -d)"
+    download_file 'https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh' "$tmp_acme_dir/acme.sh" || { rm -rf "$tmp_acme_dir"; die '无法下载 acme.sh。'; }
+    if [ -n "${CERT_EMAIL:-}" ]; then
+        ( cd "$tmp_acme_dir" && sh ./acme.sh --install --home "$ACME_HOME" --no-cron --accountemail "$CERT_EMAIL" ) || { rm -rf "$tmp_acme_dir"; die 'acme.sh 安装失败（见上方提示）。'; }
+    else
+        ( cd "$tmp_acme_dir" && sh ./acme.sh --install --home "$ACME_HOME" --no-cron ) || { rm -rf "$tmp_acme_dir"; die 'acme.sh 安装失败（见上方提示）。'; }
+    fi
+    rm -rf "$tmp_acme_dir"
     [ -x "$ACME_HOME/acme.sh" ] || die 'acme.sh 安装后未找到可执行文件。'
 }
 ACME_CRON_MARKER='# sing-box-lite-acme-renewal'
