@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: VLESS-Reality + Hysteria2 one-click installer and manager
-SCRIPT_VERSION="3.4.1"
+SCRIPT_VERSION="3.5.0"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 set -eu
 CONFIG_DIR="/etc/sing-box"
@@ -23,8 +23,12 @@ if [ -n "${REALITY_SNI:-}" ]; then REALITY_SNI_FROM_ENV=1; fi
 REALITY_SNI="${REALITY_SNI:-$DEFAULT_REALITY_SNI}"
 HY2_SNI="${HY2_SNI:-www.example.com}"
 REALITY_FINGERPRINT="${REALITY_FINGERPRINT:-firefox}"
+NODE_REGION_CODE_ENV="${NODE_REGION_CODE:-}"
 NODE_REGION_CODE="${NODE_REGION_CODE:-}"
+NODE_REGION_EMOJI_ENV="${NODE_REGION_EMOJI:-}"
 NODE_REGION_EMOJI="${NODE_REGION_EMOJI:-}"
+NODE_NAME_EXTRA_ENV="${NODE_NAME_EXTRA:-}"
+NODE_NAME_EXTRA="${NODE_NAME_EXTRA:-}"
 DEFAULT_REALITY_PORT="55667"
 DEFAULT_HY2_PORT="55668"
 DEFAULT_ACME_HTTP_PORT="80"
@@ -664,6 +668,164 @@ get_public_ipv6() {
     fi
     printf '%s' ''
 }
+# ---------- 节点名称：{旗帜}{地区码}-{自定义部分}-{协议}-IPv4/IPv6 ----------
+# 两位地区码 → 国旗 emoji（区域指示符 U+1F1E6..U+1F1FF，第 4 字节 0xA6 + 字母序号）
+region_flag() {
+    _cc=$(printf '%s' "${1:-}" | tr 'a-z' 'A-Z')
+    case "$_cc" in [A-Z][A-Z]) ;; *) return 0 ;; esac
+    _c1=$(printf '%s' "$_cc" | cut -c1); _c2=$(printf '%s' "$_cc" | cut -c2)
+    _i1=-1; _i2=-1; _n=0
+    while [ "$_n" -lt 26 ]; do
+        _ch=$(printf '%s' 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' | cut -c$((_n + 1)))
+        if [ "$_ch" = "$_c1" ]; then _i1=$_n; fi
+        if [ "$_ch" = "$_c2" ]; then _i2=$_n; fi
+        _n=$((_n + 1))
+    done
+    [ "$_i1" -ge 0 ] && [ "$_i2" -ge 0 ] || return 0
+    _o1=$(printf '%03o' $((166 + _i1))); _o2=$(printf '%03o' $((166 + _i2)))
+    printf "\\360\\237\\207\\$_o1\\360\\237\\207\\$_o2"
+}
+validate_region_code() {
+    case "${1:-}" in [A-Za-z][A-Za-z]) return 0 ;; *) return 1 ;; esac
+}
+sanitize_name_part() {
+    # 自定义部分：去掉会破坏链接 fragment 的字符，空白折叠为 '-'，去掉首尾 '-'
+    printf '%s' "${1:-}" \
+        | sed -e "s/[#?&%<>\"'\\\\]//g" -e 's/[[:space:]][[:space:]]*/-/g' -e 's/^-\+//' -e 's/-\+$//'
+}
+region_fetch() {
+    # 抓取接口响应：先 IPv4 再回退默认协议族（IPv6-only 机器同样可用）
+    _url="$1"
+    if have curl; then
+        curl -4fsSL --connect-timeout 2 --max-time 4 "$_url" 2>/dev/null && return 0
+        curl -fsSL --connect-timeout 2 --max-time 4 "$_url" 2>/dev/null && return 0
+        return 1
+    elif have wget; then
+        wget -q -T 4 -O - "$_url" 2>/dev/null && return 0
+        return 1
+    fi
+    return 1
+}
+detect_ip_region() {
+    # 按公网 IP 查询两位地区码；多个免费接口依次回退，全部失败时输出空
+    _ip="${1:-}"; _cc=''
+    [ -n "$_ip" ] || return 0
+    for _url in \
+        "https://api.country.is/$_ip" \
+        "https://ipwho.is/$_ip?fields=country_code" \
+        "https://ipinfo.io/$_ip/country/" \
+        "http://ip-api.com/json/$_ip?fields=countryCode"
+    do
+        _body="$(region_fetch "$_url" 2>/dev/null | tr -d '[:space:]')" || _body=''
+        case "$_body" in
+            *'"country":"'*) _cc="$(printf '%s' "$_body" | sed -n 's/.*"country":"\([A-Za-z][A-Za-z]\)".*/\1/p')" ;;
+            *'"country_code":"'*) _cc="$(printf '%s' "$_body" | sed -n 's/.*"country_code":"\([A-Za-z][A-Za-z]\)".*/\1/p')" ;;
+            [A-Za-z][A-Za-z]) _cc="$_body" ;;
+        esac
+        if validate_region_code "$_cc"; then printf '%s' "$_cc" | tr 'a-z' 'A-Z'; return 0; fi
+    done
+    return 0
+}
+node_base_name() {
+    # 名称主体：{旗帜}{地区码}[-自定义部分]；两者都没有时退回公网 IP
+    _name="${NODE_REGION_EMOJI}${NODE_REGION_CODE}"
+    if [ -n "${NODE_NAME_EXTRA:-}" ]; then
+        if [ -n "$_name" ]; then _name="${_name}-${NODE_NAME_EXTRA}"; else _name="$NODE_NAME_EXTRA"; fi
+    fi
+    [ -n "$_name" ] || _name="$PUBLIC_IP"
+    printf '%s' "$_name"
+}
+set_region_emoji() {
+    # NODE_REGION_EMOJI 显式给出时优先使用，否则按地区码生成国旗
+    if [ -n "$NODE_REGION_EMOJI_ENV" ]; then NODE_REGION_EMOJI="$NODE_REGION_EMOJI_ENV"; return 0; fi
+    NODE_REGION_EMOJI="$(region_flag "${NODE_REGION_CODE:-}")"
+}
+prompt_node_name() {
+    # 除一键安装外的安装方式：识别地区 → 确认是否准确 → 询问自定义部分
+    # NODE_REGION_CODE / NODE_NAME_EXTRA 环境变量可跳过对应询问
+    if [ -n "$NODE_REGION_CODE_ENV" ]; then
+        NODE_REGION_CODE="$(printf '%s' "$NODE_REGION_CODE_ENV" | tr 'a-z' 'A-Z')"
+        set_region_emoji
+        if [ -n "$NODE_NAME_EXTRA_ENV" ]; then
+            NODE_NAME_EXTRA="$(sanitize_name_part "$NODE_NAME_EXTRA_ENV")"
+        elif [ -z "$NODE_NAME_EXTRA" ]; then
+            NODE_NAME_EXTRA="$(sanitize_name_part "$(read_state_value NODE_NAME_EXTRA 2>/dev/null || true)")"
+        fi
+        return 0
+    fi
+    if [ -t 0 ]; then printf '正在根据公网 IP 识别地区…\n' >&2; fi
+    _auto="$(detect_ip_region "$PUBLIC_IP" || true)"
+    if [ "${SKIP_NODE_NAME_PROMPT:-0}" = 1 ] || [ ! -t 0 ]; then
+        # 一键安装 / 非交互执行：只自动识别，不打断
+        NODE_REGION_CODE="$_auto"
+        set_region_emoji
+        if [ -z "$NODE_NAME_EXTRA" ]; then
+            if [ -n "$NODE_NAME_EXTRA_ENV" ]; then
+                NODE_NAME_EXTRA="$(sanitize_name_part "$NODE_NAME_EXTRA_ENV")"
+            else
+                NODE_NAME_EXTRA="$(sanitize_name_part "$(read_state_value NODE_NAME_EXTRA 2>/dev/null || true)")"
+            fi
+        fi
+        [ -n "$NODE_REGION_CODE" ] && log "节点名称地区（自动识别）：$(region_flag "$NODE_REGION_CODE") $NODE_REGION_CODE"
+        return 0
+    fi
+    if [ -n "$_auto" ]; then
+        printf '\n已根据公网 IP %s 识别到地区：%s %s\n' "$PUBLIC_IP" "$(region_flag "$_auto")" "$_auto" >&2
+        while :; do
+            printf '地区识别是否准确？[Y/n]（回车=准确）：' >&2
+            read -r _ans || _ans=''
+            case "$_ans" in
+                ''|y|Y|yes|YES|是) NODE_REGION_CODE="$_auto"; break ;;
+                n|N|no|NO|否)
+                    while :; do
+                        printf '请输入两位地区缩写（如 US / JP，回车跳过）：' >&2
+                        read -r _cc || _cc=''
+                        [ -n "$_cc" ] || break
+                        if validate_region_code "$_cc"; then
+                            NODE_REGION_CODE="$(printf '%s' "$_cc" | tr 'a-z' 'A-Z')"; break
+                        fi
+                        warn '地区缩写必须是两位字母（回车跳过）。'
+                    done
+                    break ;;
+                *) warn '请输入 y 或 n。' ;;
+            esac
+        done
+    else
+        printf '\n无法自动识别 %s 的地区。\n请输入两位地区缩写（如 US / JP，回车跳过）：' "$PUBLIC_IP" >&2
+        while :; do
+            read -r _cc || _cc=''
+            [ -n "$_cc" ] || break
+            if validate_region_code "$_cc"; then NODE_REGION_CODE="$(printf '%s' "$_cc" | tr 'a-z' 'A-Z')"; break; fi
+            warn '地区缩写必须是两位字母（回车跳过）。'
+        done
+    fi
+    set_region_emoji
+    _old_extra="$(read_state_value NODE_NAME_EXTRA 2>/dev/null || true)"
+    if [ -n "$NODE_NAME_EXTRA_ENV" ]; then
+        NODE_NAME_EXTRA="$(sanitize_name_part "$NODE_NAME_EXTRA_ENV")"
+    else
+        if [ -n "$_old_extra" ]; then
+            printf '\n订阅名称自定义部分（回车留空跳过；上次为 %s）：' "$_old_extra" >&2
+        else
+            printf '\n订阅名称自定义部分（如 家宽、Netflix；回车留空跳过）：' >&2
+        fi
+        read -r _extra || _extra=''
+        NODE_NAME_EXTRA="$(sanitize_name_part "$_extra")"
+    fi
+    _main_tag=IPv4
+    case "$PUBLIC_IP" in *:*) _main_tag=IPv6 ;; esac
+    _preview=''
+    if is_protocol_enabled reality; then _preview="$(node_base_name)-Vless-${_main_tag}"; fi
+    if is_protocol_enabled hy2; then _preview="${_preview:+$_preview  /  }$(node_base_name)-Hy2-${_main_tag}"; fi
+    if [ -n "$_preview" ]; then
+        if [ "$LISTEN_BOTH" = 1 ]; then
+            printf '节点名称：%s（双栈另生成另一族地址的同名节点）\n' "$_preview" >&2
+        else
+            printf '节点名称：%s\n' "$_preview" >&2
+        fi
+    fi
+    return 0
+}
 make_uuid() {
     if [ -r /proc/sys/kernel/random/uuid ]; then cat /proc/sys/kernel/random/uuid; return; fi
     h="$(openssl rand -hex 16)"
@@ -863,8 +1025,10 @@ write_client_files() {
     fi
     rm -f "$CLIENT_DIR"/reality.json "$CLIENT_DIR"/hysteria2.json "$CLIENT_DIR"/reality-*.json "$CLIENT_DIR"/hysteria2-*.json "$CLIENT_DIR"/links.txt
     : > "$CLIENT_DIR/links.txt"
-    node_name="${NODE_REGION_EMOJI}${NODE_REGION_CODE}"
-    [ -n "$node_name" ] || node_name="$PUBLIC_IP"
+    node_name="$(node_base_name)"
+    # 名称末尾的地址族：主链接按节点地址判定，双栈的另一族由 ALT_TAG 标注
+    MAIN_TAG=IPv4
+    case "$PUBLIC_IP" in *:*) MAIN_TAG=IPv6 ;; esac
     if is_protocol_enabled reality; then
         cat > "$CLIENT_DIR/reality.json" <<EOF
 {
@@ -872,8 +1036,8 @@ write_client_files() {
   "outbounds": [{"type": "vless", "tag": "proxy", "server": "$PUBLIC_IP", "server_port": $REALITY_PORT, "uuid": "$UUID", "flow": "xtls-rprx-vision", "tls": {"enabled": true, "server_name": "$REALITY_SNI", "utls": {"enabled": true, "fingerprint": "$REALITY_FINGERPRINT"}, "reality": {"enabled": true, "public_key": "$REALITY_PUBLIC_KEY", "short_id": ""}}}]
 }
 EOF
-        REALITY_LINK="vless://${UUID}@${URL_HOST}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SNI}&fp=${REALITY_FINGERPRINT}&pbk=${REALITY_PUBLIC_KEY}&type=tcp&headerType=none#${node_name}-Vless"
-        printf '# %s-Vless\n%s\n\n' "$node_name" "$REALITY_LINK" >> "$CLIENT_DIR/links.txt"
+        REALITY_LINK="vless://${UUID}@${URL_HOST}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_SNI}&fp=${REALITY_FINGERPRINT}&pbk=${REALITY_PUBLIC_KEY}&type=tcp&headerType=none#${node_name}-Vless-${MAIN_TAG}"
+        printf '# %s-Vless-%s\n%s\n\n' "$node_name" "$MAIN_TAG" "$REALITY_LINK" >> "$CLIENT_DIR/links.txt"
         chmod 600 "$CLIENT_DIR/reality.json"
     fi
     if is_protocol_enabled hy2; then
@@ -885,8 +1049,8 @@ EOF
   "outbounds": [{"type": "hysteria2", "tag": "proxy", "server": "$HOST_ADDR", "server_port": $HY2_PORT, "password": "$HY2_PASSWORD", "tls": {"enabled": true, "server_name": "$HY2_SNI", "insecure": $insecure}}]
 }
 EOF
-        HY2_LINK="hysteria2://${HY2_PASSWORD}@${HOST_ADDR}:${HY2_PORT}/?${query}#${node_name}-Hy2"
-        printf '# %s-Hy2（%s）\n%s\n' "$node_name" "$note" "$HY2_LINK" >> "$CLIENT_DIR/links.txt"
+        HY2_LINK="hysteria2://${HY2_PASSWORD}@${HOST_ADDR}:${HY2_PORT}/?${query}#${node_name}-Hy2-${MAIN_TAG}"
+        printf '# %s-Hy2-%s（%s）\n%s\n' "$node_name" "$MAIN_TAG" "$note" "$HY2_LINK" >> "$CLIENT_DIR/links.txt"
         chmod 600 "$CLIENT_DIR/hysteria2.json"
     fi
     if [ -n "$ALT_HOST" ]; then
@@ -1037,6 +1201,9 @@ LISTEN_BOTH=$LISTEN_BOTH
 PUBLIC_IP_V4=$PUBLIC_IP_V4
 PUBLIC_IP_V6=$PUBLIC_IP_V6
 IP_FAMILY=$IP_FAMILY
+NODE_REGION_CODE=$NODE_REGION_CODE
+NODE_REGION_EMOJI=$NODE_REGION_EMOJI
+NODE_NAME_EXTRA=$NODE_NAME_EXTRA
 EOF
     chmod 600 "$STATE_FILE"
     {
@@ -1044,6 +1211,7 @@ EOF
         printf '脚本版本: %s\n' "$SCRIPT_VERSION"
         printf '安装模式: %s\n' "$INSTALL_MODE"
         printf '服务器地址: %s\n' "$PUBLIC_IP"
+        printf '节点名称: %s\n' "$(node_base_name)"
         if [ "$V6_ONLY" = 1 ]; then printf '网络类型: IPv6-only\n'; else
             if [ "$LISTEN_BOTH" = 1 ]; then printf '网络类型: 双栈（IPv4 + IPv6 同时监听）\n'
             elif [ "$LISTEN_IPV6" = 1 ]; then printf '网络类型: 双栈（监听 IPv6）\n'; else printf '网络类型: IPv4\n'; fi
@@ -1267,7 +1435,9 @@ prepare_install() {
         fi
         die '无法获取公网 IP，请设置 PUBLIC_IP 后重试。'
     fi
-    # 节点地区名称为可选环境变量；未设置时使用公网地址作为节点名，不阻断安装。
+    # 节点名称：{旗帜}{地区码}-{自定义部分}-{协议}-IPv4/IPv6
+    # 一键安装只自动识别地区；自定义安装 / install 命令会额外询问确认与自定义部分。
+    prompt_node_name
     HY2_HOST="$PUBLIC_IP"
     mkdir -p "$CONFIG_DIR" "$CLIENT_DIR" /var/lib/sing-box; chmod 700 "$CONFIG_DIR" "$CLIENT_DIR"
     backup_file "$CONFIG_FILE"; backup_file "$REALITY_CONFIG_FILE"; backup_file "$HY2_CONFIG_FILE"
@@ -1340,7 +1510,7 @@ show_menu() {
         read -r choice || exit 0
         case "$choice" in
             1)
-                ( INSTALL_MODE=both; REALITY_PORT=''; HY2_PORT=''; CERT_MODE=self; CERT_DOMAIN=''; CERT_HTTP_PORT=''; prepare_install ) || warn '安装未完成。'
+                ( INSTALL_MODE=both; REALITY_PORT=''; HY2_PORT=''; CERT_MODE=self; CERT_DOMAIN=''; CERT_HTTP_PORT=''; SKIP_NODE_NAME_PROMPT=1; prepare_install ) || warn '安装未完成。'
                 pause ;;
             2)
                 ( prompt_install_options && prepare_install ) || warn '安装未完成。'
@@ -1401,8 +1571,9 @@ usage() {
   REALITY_SNI=域名      指定 Reality 握手域名（默认 academy.nvidia.com）
   REMOTE_SCRIPT_URL=URL 指定脚本升级地址
   ACME_HTTP_PORT=端口   预填证书 HTTP 验证端口
-  NODE_REGION_EMOJI=X   节点名称前缀（表情，可选）
-  NODE_REGION_CODE=X    节点名称后缀（地区码，可选）
+  NODE_REGION_CODE=US    直接指定节点地区码（跳过地区识别与确认）
+  NODE_REGION_EMOJI=🇺🇸   覆盖节点名称前缀（国旗/表情，可选）
+  NODE_NAME_EXTRA=家宽   直接指定名称中的自定义部分（跳过询问）
   FORCE_SCRIPT_UPDATE=1 脚本升级时忽略版本比较，强制覆盖
   NO_COLOR=1            关闭彩色输出
 EOF

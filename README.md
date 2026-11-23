@@ -46,7 +46,7 @@ singbox
 ./install-singbox-lite.sh help | version
 ```
 
-其中 `install` 不带端口参数时回填上次安装使用的端口（见 `state.env`）。
+其中 `install` 不带端口参数时回填上次安装使用的端口（见 `state.env`）。除菜单 1「一键快捷安装」外，`install` 与自定义安装都会询问节点名称的地区确认与自定义部分（见「节点名称」）；stdin 不是终端时自动跳过询问。
 
 ## 环境变量
 
@@ -57,9 +57,27 @@ singbox
 | `REALITY_SNI` | 指定 Reality 握手域名（默认 `academy.nvidia.com`） |
 | `ACME_HTTP_PORT` | 预填证书 HTTP 验证端口 |
 | `REMOTE_SCRIPT_URL` | 指定脚本升级地址 |
-| `NODE_REGION_EMOJI` / `NODE_REGION_CODE` | 节点名称前缀 / 后缀（可选） |
+| `NODE_REGION_CODE` | 直接指定节点地区码（如 `US`），跳过地区识别与确认 |
+| `NODE_REGION_EMOJI` | 覆盖节点名称前缀（国旗 / 表情，可选） |
+| `NODE_NAME_EXTRA` | 直接指定名称中的自定义部分（如 `家宽`），跳过询问 |
 | `FORCE_SCRIPT_UPDATE=1` | 脚本升级时忽略版本比较，强制覆盖 |
 | `NO_COLOR=1` | 关闭彩色输出 |
+
+## 节点名称
+
+节点名称统一格式：
+
+```text
+{旗帜}{地区码}-{自定义部分}-{协议}-{IPv4|IPv6}
+```
+
+例如 `🇺🇸US-家宽-Vless-IPv4`、`🇯🇵JP-Hy2-IPv6`，双栈安装时两种地址各生成一份同名节点。
+
+- **地区**：安装时按节点公网 IP 自动识别国家/地区（依次尝试 `api.country.is`、`ipwho.is`、`ipinfo.io`、`ip-api.com`），识别结果会显示出来并询问是否准确；回答 `n` 后可手动输入两位地区缩写（如 `US`、`JP`），直接回车则跳过地区（名称退回公网 IP）。
+- **自定义部分**：随后询问一次，用于标注线路用途（如 `家宽`、`Netflix`）；**直接回车默认为空并跳过**，填写后插入到地区码之后。空白会转成 `-`，`#?&%<>"'` 等破坏链接的字符会被去掉。
+- 询问只出现在**除「一键快捷安装」以外**的安装方式：菜单 2「自定义安装」、`install` 子命令以及直接带端口的调用。同一台机器重装时会提示上次使用的自定义部分，但回车仍然是留空。
+- 一键快捷安装不做任何询问，仅自动识别地区；非交互执行（stdin 不是终端）时同样只自动识别，不阻塞脚本。
+- 识别不依赖环境变量即可工作；需要固定名称时用 `NODE_REGION_CODE` / `NODE_NAME_EXTRA` 直接指定，用 `NODE_REGION_EMOJI` 覆盖旗帜。
 
 ## 自定义安装
 
