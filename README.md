@@ -96,7 +96,7 @@ singbox
 
 两个协议现在可以独立管理，不再必须一起启动或停止。
 
-Reality 握手域名默认 `academy.nvidia.com`；自定义安装时可选择 `academy.nvidia.com`（默认）、`bing.com` 或输入自定义域名（也支持直接输入域名），重装时回填上次使用的域名。运行前设置 `REALITY_SNI=域名` 可直接指定，交互中不再回填。
+Reality 握手域名默认 `academy.nvidia.com`；自定义安装时可选择 `academy.nvidia.com`（默认）、`bing.com`、`tools.yanjie233.top` 或输入自定义域名（也支持直接输入域名），重装时回填上次使用的域名。运行前设置 `REALITY_SNI=域名` 可直接指定，交互中不再回填。
 
 端口可以留空：交互安装回车使用默认值或上次安装的值；输入 `y` 确认才会覆盖已有安装（重新生成密钥、证书与节点链接），否则取消安装。
 

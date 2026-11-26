@@ -1,6 +1,6 @@
 #!/bin/sh
 # sing-box-lite: VLESS-Reality + Hysteria2 one-click installer and manager
-SCRIPT_VERSION="3.5.0"
+SCRIPT_VERSION="3.5.1"
 REMOTE_SCRIPT_URL="${REMOTE_SCRIPT_URL:-https://raw.githubusercontent.com/yanjie233/sing-box-lite/main/install-singbox-lite.sh}"
 set -eu
 CONFIG_DIR="/etc/sing-box"
@@ -17,6 +17,7 @@ SHORTCUT_PATH="/usr/local/bin/singbox"
 REALITY_SERVICE="sing-box-reality"
 HY2_SERVICE="sing-box-hysteria2"
 REALITY_SNI_ALT="bing.com"
+REALITY_SNI_ALT2="tools.yanjie233.top"
 DEFAULT_REALITY_SNI="academy.nvidia.com"
 REALITY_SNI_FROM_ENV=0
 if [ -n "${REALITY_SNI:-}" ]; then REALITY_SNI_FROM_ENV=1; fi
@@ -1334,14 +1335,15 @@ prompt_install_options() {
     if is_protocol_enabled reality; then
         REALITY_PORT="$(prompt_port 'Reality TCP 端口' "$DEFAULT_REALITY_PORT" "$REALITY_PORT")"
         while :; do
-            printf '\nReality 握手域名：\n  1) %s（默认）\n  2) %s\n  3) 自定义域名\n请选择（回车保持当前 %s）：\n' \
-                "$DEFAULT_REALITY_SNI" "$REALITY_SNI_ALT" "$REALITY_SNI" >&2
+            printf '\nReality 握手域名：\n  1) %s（默认）\n  2) %s\n  3) %s\n  4) 自定义域名\n请选择（回车保持当前 %s）：\n' \
+                "$DEFAULT_REALITY_SNI" "$REALITY_SNI_ALT" "$REALITY_SNI_ALT2" "$REALITY_SNI" >&2
             read -r value || value=''
             case "$value" in
                 '') break ;;
                 1) REALITY_SNI="$DEFAULT_REALITY_SNI"; break ;;
                 2) REALITY_SNI="$REALITY_SNI_ALT"; break ;;
-                3)
+                3) REALITY_SNI="$REALITY_SNI_ALT2"; break ;;
+                4)
                     while :; do
                         printf '自定义握手域名（回车使用 %s）：' "$REALITY_SNI" >&2
                         read -r candidate || candidate=''
@@ -1353,7 +1355,7 @@ prompt_install_options() {
                 *)
                     # 单个字符按无效菜单项处理，其余按域名校验（也允许直接输入域名）
                     case "$value" in
-                        ?) warn '无效选项，请输入 1-3，或直接输入域名。' ;;
+                        ?) warn '无效选项，请输入 1-4，或直接输入域名。' ;;
                         *)
                             if validate_domain "$value"; then REALITY_SNI="$value"; break; fi
                             warn "域名格式无效：$value" ;;
